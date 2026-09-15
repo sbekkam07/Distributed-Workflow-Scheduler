@@ -53,35 +53,48 @@ func (r *JobRepository) Get(ctx context.Context, id string) (jobs.Job, error) {
 	return job, nil
 }
 
-// ClaimNext atomically changes the oldest queued job to RUNNING and returns it.
+// ClaimNext transactionally changes one queued job to RUNNING and returns it.
 //
-// The status predicate is deliberately part of the UPDATE. That makes this a
-// safe single-worker claim and prevents two accidental workers from both
-// claiming the same row. Phase 2 will replace this with SKIP LOCKED to avoid
-// contention when multiple workers are an intentional deployment mode.
+// FOR UPDATE SKIP LOCKED lets concurrent workers move past a row another worker
+// is claiming instead of blocking or reading it as available. The transaction
+// ends before the job is executed, so database locks never span user work.
 func (r *JobRepository) ClaimNext(ctx context.Context) (jobs.Job, bool, error) {
-	const query = `
-		WITH next_job AS (
-			SELECT id
-			FROM jobs
-			WHERE status = 'QUEUED'
-			ORDER BY created_at ASC
-			LIMIT 1
-		)
-		UPDATE jobs AS job
-		SET status = 'RUNNING', started_at = now()
-		FROM next_job
-		WHERE job.id = next_job.id AND job.status = 'QUEUED'
-		RETURNING job.id, job.kind, job.payload, job.status, job.error_message,
-			job.created_at, job.started_at, job.completed_at`
-
-	job, err := scanJob(r.pool.QueryRow(ctx, query))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return jobs.Job{}, false, nil
-	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return jobs.Job{}, false, fmt.Errorf("claim next job: %w", err)
+		return jobs.Job{}, false, fmt.Errorf("begin job claim: %w", err)
 	}
+	defer tx.Rollback(ctx)
+
+	const selectQuery = `
+		SELECT id
+		FROM jobs
+		WHERE status = 'QUEUED'
+		ORDER BY created_at ASC, id ASC
+		FOR UPDATE SKIP LOCKED
+		LIMIT 1`
+
+	var id string
+	if err := tx.QueryRow(ctx, selectQuery).Scan(&id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return jobs.Job{}, false, nil
+		}
+		return jobs.Job{}, false, fmt.Errorf("select queued job for claim: %w", err)
+	}
+
+	const updateQuery = `
+		UPDATE jobs
+		SET status = 'RUNNING', started_at = now()
+		WHERE id = $1 AND status = 'QUEUED'
+		RETURNING id, kind, payload, status, error_message, created_at, started_at, completed_at`
+
+	job, err := scanJob(tx.QueryRow(ctx, updateQuery, id))
+	if err != nil {
+		return jobs.Job{}, false, fmt.Errorf("mark claimed job running: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return jobs.Job{}, false, fmt.Errorf("commit job claim: %w", err)
+	}
+
 	return job, true, nil
 }
 

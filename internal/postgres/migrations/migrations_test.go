@@ -9,6 +9,8 @@ func TestFSEmbedsInitialMigrationPair(t *testing.T) {
 	for _, name := range []string{
 		"000001_create_jobs.up.sql",
 		"000001_create_jobs.down.sql",
+		"000002_add_queued_claim_index.up.sql",
+		"000002_add_queued_claim_index.down.sql",
 	} {
 		contents, err := fs.ReadFile(FS, name)
 		if err != nil {

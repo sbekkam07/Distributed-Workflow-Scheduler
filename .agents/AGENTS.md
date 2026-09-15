@@ -28,15 +28,15 @@ observability components. Do not build this target architecture all at once.
 
 ## Current verified status
 
-Phase 1 is complete. The repository has Go process entry points, a `Job` domain
-state machine, PostgreSQL connection configuration, an embedded migration
-command, an initial `jobs` schema, a PostgreSQL job repository, and `POST /jobs`
-and `GET /jobs/{id}` endpoints. One worker atomically claims queued jobs, runs
-the `echo` executor, and persists `SUCCEEDED` or `FAILED`; this has also been
-verified against a local PostgreSQL container. Phase 2 is not implemented:
-there is no intentional multi-worker deployment, `SKIP LOCKED`, lease,
-heartbeat, retry, or scheduler feature. Inspect the code and tests; the roadmap
-is not proof that a feature exists.
+Phases 1 and 2 are complete. The repository has Go process entry points, a
+`Job` domain state machine, PostgreSQL connection configuration, an embedded
+migration command, an initial `jobs` schema, a PostgreSQL job repository, and
+`POST /jobs` and `GET /jobs/{id}` endpoints. Multiple workers safely claim jobs
+using a short `FOR UPDATE SKIP LOCKED` transaction, then run the `echo` executor
+and persist `SUCCEEDED` or `FAILED`. A real PostgreSQL integration test verifies
+four workers execute 24 jobs exactly once. Phase 3 is not implemented: there is
+no lease owner, expiration, heartbeat, retry, or scheduler feature. Inspect the
+code and tests; the roadmap is not proof that a feature exists.
 
 ## Phase boundaries
 

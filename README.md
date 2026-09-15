@@ -4,9 +4,10 @@ A Go workflow scheduler built incrementally to explore reliable job execution.
 
 ## Current phase
 
-Phase 1 complete: a single worker polls PostgreSQL, atomically claims one queued
-job, runs the initial `echo` executor, and records its final state. Concurrent
-worker coordination, leases, and retries remain later phases.
+Phases 1 and 2 complete: workers poll PostgreSQL, transactionally claim queued
+jobs, run the initial `echo` executor, and record final state. PostgreSQL row
+locks ensure competing workers do not execute one job concurrently; leases and
+retries remain later phases.
 
 ## Layout
 
@@ -73,6 +74,23 @@ go run ./cmd/worker
 The current Phase 1 executor supports jobs with `"kind":"echo"`. It logs the
 payload's `message` and then marks the job `SUCCEEDED`. An unsupported kind or
 invalid executor payload is marked `FAILED`.
+
+## Concurrent workers
+
+Phase 2 supports multiple worker processes. Each worker claims jobs in a short
+transaction using `FOR UPDATE SKIP LOCKED`, then executes after that transaction
+commits. Start more workers in separate terminals using the same `DATABASE_URL`:
+
+```bash
+go run ./cmd/worker
+```
+
+The integration test creates and drops an isolated temporary PostgreSQL database
+to verify that four workers execute 24 jobs exactly once:
+
+```bash
+RUN_POSTGRES_INTEGRATION=1 go test -race ./internal/postgres -run TestConcurrentWorkersClaimEveryJobOnce
+```
 
 Run migrations as a separate deployment step, before starting API or worker
 processes. Do not run them from every service instance: with future replicas,
