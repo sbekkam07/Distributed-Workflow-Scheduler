@@ -133,7 +133,7 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		return claimed, err
 	}
 
-	w.logger.Info("claimed job", "job_id", job.ID, "kind", job.Kind, "lease_owner", w.workerID)
+	w.logger.Info("claimed job", "job_id", job.ID, "kind", job.Kind, "effect_key", job.EffectKey(), "lease_owner", w.workerID)
 	executionErr := w.executeWithHeartbeats(ctx, job)
 	finalizationContext, cancel := finalizationContext(ctx)
 	defer cancel()

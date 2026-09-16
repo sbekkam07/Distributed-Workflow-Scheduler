@@ -15,6 +15,10 @@ func TestFSEmbedsInitialMigrationPair(t *testing.T) {
 		"000003_add_job_leases.down.sql",
 		"000004_add_job_retries.up.sql",
 		"000004_add_job_retries.down.sql",
+		"000005_add_job_idempotency_keys.up.sql",
+		"000005_add_job_idempotency_keys.down.sql",
+		"000006_add_job_priorities.up.sql",
+		"000006_add_job_priorities.down.sql",
 	} {
 		contents, err := fs.ReadFile(FS, name)
 		if err != nil {

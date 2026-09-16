@@ -31,6 +31,7 @@ type createJobRequest struct {
 	Kind        string          `json:"kind"`
 	Payload     json.RawMessage `json:"payload"`
 	MaxAttempts *int            `json:"max_attempts,omitempty"`
+	Priority    *string         `json:"priority,omitempty"`
 }
 
 func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
@@ -53,18 +54,46 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 	if request.MaxAttempts != nil {
 		maxAttempts = *request.MaxAttempts
 	}
-	job, err := h.service.SubmitWithMaxAttempts(r.Context(), request.Kind, request.Payload, maxAttempts)
+	priority := jobs.DefaultPriority
+	if request.Priority != nil {
+		priority = jobs.Priority(*request.Priority)
+	}
+	key := r.Header.Get("Idempotency-Key")
+	if key != "" {
+		submission, err := h.service.SubmitIdempotently(r.Context(), request.Kind, request.Payload, maxAttempts, priority, key)
+		if err != nil {
+			writeCreateJobError(w, err)
+			return
+		}
+		status := http.StatusCreated
+		if !submission.Created {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, submission.Job)
+		return
+	}
+
+	job, err := h.service.SubmitWithOptions(r.Context(), request.Kind, request.Payload, maxAttempts, priority)
 	if err != nil {
-		if errors.Is(err, jobs.ErrInvalidKind) || errors.Is(err, jobs.ErrInvalidPayload) || errors.Is(err, jobs.ErrInvalidMaxAttempts) {
+		writeCreateJobError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func writeCreateJobError(w http.ResponseWriter, err error) {
+	if err != nil {
+		if errors.Is(err, jobs.ErrInvalidKind) || errors.Is(err, jobs.ErrInvalidPayload) || errors.Is(err, jobs.ErrInvalidMaxAttempts) || errors.Is(err, jobs.ErrInvalidIdempotencyKey) || errors.Is(err, jobs.ErrInvalidPriority) {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, jobs.ErrIdempotencyConflict) {
+			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
 		slog.Error("create job", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
-		return
 	}
-
-	writeJSON(w, http.StatusCreated, job)
 }
 
 func (h *handler) getJob(w http.ResponseWriter, r *http.Request) {

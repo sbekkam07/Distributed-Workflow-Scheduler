@@ -22,11 +22,35 @@ func (r *memoryRepository) Create(_ context.Context, job Job) (Job, error) {
 	return r.job, nil
 }
 
+func (r *memoryRepository) CreateOrGet(ctx context.Context, job Job) (Job, bool, error) {
+	if r.job.ID != "" && r.job.IdempotencyKey != nil && job.IdempotencyKey != nil && *r.job.IdempotencyKey == *job.IdempotencyKey {
+		if r.job.Kind != job.Kind || string(r.job.Payload) != string(job.Payload) || r.job.MaxAttempts != job.MaxAttempts || r.job.Priority != job.Priority {
+			return Job{}, false, ErrIdempotencyConflict
+		}
+		return r.job, false, nil
+	}
+	created, err := r.Create(ctx, job)
+	return created, true, err
+}
+
 func (r *memoryRepository) Get(_ context.Context, _ string) (Job, error) {
 	if r.getErr != nil {
 		return Job{}, r.getErr
 	}
 	return r.job, nil
+}
+
+func TestServiceSubmitIdempotently(t *testing.T) {
+	repository := &memoryRepository{}
+	service := NewService(repository, time.Now)
+	first, err := service.SubmitIdempotently(context.Background(), "echo", json.RawMessage(`{"message":"once"}`), 3, PriorityNormal, "request-key")
+	if err != nil || !first.Created {
+		t.Fatalf("first SubmitIdempotently() = %+v, %v", first, err)
+	}
+	second, err := service.SubmitIdempotently(context.Background(), "echo", json.RawMessage(`{"message":"once"}`), 3, PriorityNormal, "request-key")
+	if err != nil || second.Created || second.Job.ID != first.Job.ID {
+		t.Fatalf("second SubmitIdempotently() = %+v, %v", second, err)
+	}
 }
 
 func TestServiceSubmitPersistsQueuedJob(t *testing.T) {

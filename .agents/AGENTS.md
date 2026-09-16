@@ -28,7 +28,7 @@ observability components. Do not build this target architecture all at once.
 
 ## Current verified status
 
-Phases 1–4 are complete. The repository has Go process entry points, a
+Phases 1–6 are complete. The repository has Go process entry points, a
 `Job` domain state machine, PostgreSQL connection configuration, an embedded
 migration command, an initial `jobs` schema, a PostgreSQL job repository, and
 `POST /jobs` and `GET /jobs/{id}` endpoints. Multiple workers safely claim jobs
@@ -41,9 +41,16 @@ at-least-once execution, not exactly-once delivery: a side effect can be
 duplicated after a lease expires. Jobs have a bounded total attempt budget;
 retryable failures receive durable exponential backoff through
 `next_attempt_at`, while non-retryable failures are `FAILED` and exhausted
-retryable jobs are `DEAD`. Workers do not sleep for backoff. Idempotency and
-scheduler features are not yet implemented. Inspect the code and tests; the
-roadmap is not proof that a feature exists.
+retryable jobs are `DEAD`. Workers do not sleep for backoff. A unique
+client-supplied `Idempotency-Key` returns the same durable job on repeated
+submission and is retained as the stable effect key across retries. External
+executors must use that key with the target system's idempotency support; this
+project still provides at-least-once, not global exactly-once, execution.
+Eligible work is claimed in strict `HIGH`, `NORMAL`, then `LOW` priority order,
+with an index matching the claim predicate and ordering. This can starve lower
+priorities under sustained high-priority load; the project does not make a
+fairness claim. Scheduling features are not yet implemented. Inspect the code
+and tests; the roadmap is not proof that a feature exists.
 
 ## Phase boundaries
 

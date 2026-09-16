@@ -25,23 +25,61 @@ func NewJobRepository(pool *pgxpool.Pool) *JobRepository {
 // Create inserts a queued job and returns the database-generated fields.
 func (r *JobRepository) Create(ctx context.Context, job jobs.Job) (jobs.Job, error) {
 	const query = `
-		INSERT INTO jobs (kind, payload, max_attempts)
-		VALUES ($1, $2, $3)
-		RETURNING id, kind, payload, status, error_message, created_at, started_at, completed_at,
-			lease_owner, lease_expires_at, last_heartbeat_at, attempt_count, max_attempts, next_attempt_at`
+		INSERT INTO jobs (kind, payload, priority, max_attempts, idempotency_key)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, kind, payload, priority, status, error_message, created_at, started_at, completed_at,
+			lease_owner, lease_expires_at, last_heartbeat_at, attempt_count, max_attempts, next_attempt_at, idempotency_key`
 
-	created, err := scanJob(r.pool.QueryRow(ctx, query, job.Kind, job.Payload, job.MaxAttempts))
+	created, err := scanJob(r.pool.QueryRow(ctx, query, job.Kind, job.Payload, job.Priority, job.MaxAttempts, job.IdempotencyKey))
 	if err != nil {
 		return jobs.Job{}, fmt.Errorf("insert job: %w", err)
 	}
 	return created, nil
 }
 
+// CreateOrGet creates job once for its idempotency key. PostgreSQL's unique
+// index serializes concurrent inserts; a reused key must describe identical
+// work or it is a client conflict.
+func (r *JobRepository) CreateOrGet(ctx context.Context, job jobs.Job) (jobs.Job, bool, error) {
+	const insertQuery = `
+		INSERT INTO jobs (kind, payload, priority, max_attempts, idempotency_key)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+		RETURNING id, kind, payload, priority, status, error_message, created_at, started_at, completed_at,
+			lease_owner, lease_expires_at, last_heartbeat_at, attempt_count, max_attempts, next_attempt_at, idempotency_key`
+
+	created, err := scanJob(r.pool.QueryRow(ctx, insertQuery, job.Kind, job.Payload, job.Priority, job.MaxAttempts, job.IdempotencyKey))
+	if err == nil {
+		return created, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return jobs.Job{}, false, fmt.Errorf("insert idempotent job: %w", err)
+	}
+
+	const existingQuery = `
+		SELECT id, kind, payload, priority, status, error_message, created_at, started_at, completed_at,
+			lease_owner, lease_expires_at, last_heartbeat_at, attempt_count, max_attempts, next_attempt_at, idempotency_key
+		FROM jobs
+		WHERE idempotency_key = $1
+			AND kind = $2
+			AND payload = $3::jsonb
+			AND max_attempts = $4
+			AND priority = $5`
+	existing, err := scanJob(r.pool.QueryRow(ctx, existingQuery, job.IdempotencyKey, job.Kind, job.Payload, job.MaxAttempts, job.Priority))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.Job{}, false, jobs.ErrIdempotencyConflict
+	}
+	if err != nil {
+		return jobs.Job{}, false, fmt.Errorf("get idempotent job: %w", err)
+	}
+	return existing, false, nil
+}
+
 // Get returns a job by its PostgreSQL-generated UUID.
 func (r *JobRepository) Get(ctx context.Context, id string) (jobs.Job, error) {
 	const query = `
-		SELECT id, kind, payload, status, error_message, created_at, started_at, completed_at,
-			lease_owner, lease_expires_at, last_heartbeat_at, attempt_count, max_attempts, next_attempt_at
+		SELECT id, kind, payload, priority, status, error_message, created_at, started_at, completed_at,
+			lease_owner, lease_expires_at, last_heartbeat_at, attempt_count, max_attempts, next_attempt_at, idempotency_key
 		FROM jobs
 		WHERE id = $1`
 
@@ -73,7 +111,8 @@ func (r *JobRepository) ClaimNext(ctx context.Context, owner string, leaseDurati
 		WHERE status = 'QUEUED'
 			AND next_attempt_at <= now()
 			AND attempt_count < max_attempts
-		ORDER BY next_attempt_at ASC, created_at ASC, id ASC
+		ORDER BY CASE priority WHEN 'HIGH' THEN 0 WHEN 'NORMAL' THEN 1 ELSE 2 END ASC,
+			next_attempt_at ASC, created_at ASC, id ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1`
 
@@ -95,8 +134,8 @@ func (r *JobRepository) ClaimNext(ctx context.Context, owner string, leaseDurati
 			lease_expires_at = now() + ($3 * INTERVAL '1 microsecond'),
 			last_heartbeat_at = now()
 		WHERE id = $1 AND status = 'QUEUED'
-		RETURNING id, kind, payload, status, error_message, created_at, started_at, completed_at,
-			lease_owner, lease_expires_at, last_heartbeat_at, attempt_count, max_attempts, next_attempt_at`
+		RETURNING id, kind, payload, priority, status, error_message, created_at, started_at, completed_at,
+			lease_owner, lease_expires_at, last_heartbeat_at, attempt_count, max_attempts, next_attempt_at, idempotency_key`
 
 	job, err := scanJob(tx.QueryRow(ctx, updateQuery, id, owner, leaseDuration.Microseconds()))
 	if err != nil {
@@ -236,6 +275,7 @@ func scanJob(row rowScanner) (jobs.Job, error) {
 		&job.ID,
 		&job.Kind,
 		&payload,
+		&job.Priority,
 		&status,
 		&errorText,
 		&job.CreatedAt,
@@ -247,6 +287,7 @@ func scanJob(row rowScanner) (jobs.Job, error) {
 		&job.AttemptCount,
 		&job.MaxAttempts,
 		&job.NextAttemptAt,
+		&job.IdempotencyKey,
 	); err != nil {
 		return jobs.Job{}, err
 	}

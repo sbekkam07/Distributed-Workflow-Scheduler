@@ -25,11 +25,28 @@ var (
 	ErrLeaseLost = errors.New("job lease is no longer owned by this worker")
 	// ErrInvalidMaxAttempts indicates that a job's retry limit is not positive.
 	ErrInvalidMaxAttempts = errors.New("max attempts must be a positive integer")
+	// ErrInvalidIdempotencyKey indicates an unusable client-supplied key.
+	ErrInvalidIdempotencyKey = errors.New("idempotency key must be between 1 and 255 characters")
+	// ErrIdempotencyConflict indicates a key was reused for a different job.
+	ErrIdempotencyConflict = errors.New("idempotency key was already used for a different job")
+	// ErrInvalidPriority indicates an unsupported job priority.
+	ErrInvalidPriority = errors.New("priority must be HIGH, NORMAL, or LOW")
 )
 
 // DefaultMaxAttempts is the total number of executions allowed for a job,
 // including its first execution.
 const DefaultMaxAttempts = 3
+
+// Priority controls claim ordering among eligible queued jobs.
+type Priority string
+
+const (
+	PriorityHigh   Priority = "HIGH"
+	PriorityNormal Priority = "NORMAL"
+	PriorityLow    Priority = "LOW"
+)
+
+const DefaultPriority = PriorityNormal
 
 var canonicalUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
@@ -63,6 +80,8 @@ type Job struct {
 	AttemptCount    int             `json:"attempt_count"`
 	MaxAttempts     int             `json:"max_attempts"`
 	NextAttemptAt   *time.Time      `json:"next_attempt_at,omitempty"`
+	IdempotencyKey  *string         `json:"idempotency_key,omitempty"`
+	Priority        Priority        `json:"priority"`
 }
 
 // New creates a queued job that is ready for a worker to claim.
@@ -73,11 +92,19 @@ func New(kind string, payload json.RawMessage, now time.Time) (Job, error) {
 // NewWithMaxAttempts creates a queued job with an explicit total attempt
 // budget. An attempt includes the first execution and every retry.
 func NewWithMaxAttempts(kind string, payload json.RawMessage, maxAttempts int, now time.Time) (Job, error) {
+	return NewWithOptions(kind, payload, maxAttempts, DefaultPriority, now)
+}
+
+// NewWithOptions creates a queued job with an execution budget and priority.
+func NewWithOptions(kind string, payload json.RawMessage, maxAttempts int, priority Priority, now time.Time) (Job, error) {
 	if strings.TrimSpace(kind) == "" {
 		return Job{}, ErrInvalidKind
 	}
 	if maxAttempts < 1 {
 		return Job{}, ErrInvalidMaxAttempts
+	}
+	if !priority.Valid() {
+		return Job{}, ErrInvalidPriority
 	}
 
 	if len(payload) == 0 {
@@ -94,7 +121,34 @@ func NewWithMaxAttempts(kind string, payload json.RawMessage, maxAttempts int, n
 		CreatedAt:     now.UTC(),
 		MaxAttempts:   maxAttempts,
 		NextAttemptAt: timePointer(now.UTC()),
+		Priority:      priority,
 	}, nil
+}
+
+// Valid reports whether p is a supported strict priority.
+func (p Priority) Valid() bool {
+	return p == PriorityHigh || p == PriorityNormal || p == PriorityLow
+}
+
+// WithIdempotencyKey attaches a client-supplied stable key to a new job. The
+// API uses it to turn repeated submissions into the same durable job.
+func (j Job) WithIdempotencyKey(key string) (Job, error) {
+	key = strings.TrimSpace(key)
+	if len(key) == 0 || len(key) > 255 {
+		return Job{}, ErrInvalidIdempotencyKey
+	}
+	j.IdempotencyKey = &key
+	return j, nil
+}
+
+// EffectKey is stable across every lease recovery and retry. Executors that
+// cause external effects must pass it to a target that supports idempotency.
+// If a client did not supply a key, the durable job ID is the effect key.
+func (j Job) EffectKey() string {
+	if j.IdempotencyKey != nil {
+		return *j.IdempotencyKey
+	}
+	return j.ID
 }
 
 func timePointer(value time.Time) *time.Time {

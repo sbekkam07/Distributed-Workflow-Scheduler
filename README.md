@@ -4,11 +4,13 @@ A Go workflow scheduler built incrementally to explore reliable job execution.
 
 ## Current phase
 
-Phases 1–4 complete: workers poll PostgreSQL, transactionally claim queued
+Phases 1–6 complete: workers poll PostgreSQL, transactionally claim queued
 jobs, run the initial `echo` executor, and record final state. PostgreSQL row
 locks prevent simultaneous claims, while leases and heartbeats let another
 worker recover work left `RUNNING` after a worker disappears. Retryable failures
 wait durably with exponential backoff; exhausted jobs are dead-lettered.
+Clients and external-effect executors have stable idempotency keys.
+Eligible jobs use strict `HIGH`, `NORMAL`, then `LOW` claim priority.
 
 ## Layout
 
@@ -98,7 +100,8 @@ old worker cannot finish a job after another worker has recovered it because
 terminal updates require the current, unexpired lease owner. This prevents
 permanently stuck work, but it deliberately provides **at-least-once** execution:
 if a worker completes an external side effect after losing its lease, a later
-worker may run that job again. Phase 5 will add idempotency protections.
+worker may run that job again. Phase 5 makes a stable external-effect key
+available, but the external target must enforce it.
 
 ## Retries and dead letters
 
@@ -119,6 +122,43 @@ limits with `WORKER_RETRY_BACKOFF_BASE` and `WORKER_RETRY_BACKOFF_MAX`.
 Non-retryable errors become `FAILED` immediately. A retryable error at the
 attempt limit becomes terminal `DEAD`, the initial dead-letter queue state.
 
+## Idempotency
+
+Use an `Idempotency-Key` header when a client may repeat a submission after a
+timeout. The first matching request returns `201 Created`; a repeat with the
+same job details returns the original job with `200 OK`. Reusing a key for
+different details returns `409 Conflict`.
+
+```bash
+curl -X POST http://localhost:8080/jobs \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: payment-approval-42' \
+  -d '{"kind":"echo","payload":{"message":"once"}}'
+```
+
+The same stable key is exposed on the job and is available to an executor as
+`job.EffectKey()`. If no header is supplied, the durable job ID is the effect
+key. External services must receive that key in their own idempotency mechanism
+to prevent duplicate effects across a crash or lease expiry. The scheduler is
+therefore still **at-least-once**; it does not claim global exactly-once
+execution.
+
+## Priorities
+
+Jobs default to `NORMAL` priority. Set `HIGH` or `LOW` at submission time:
+
+```bash
+curl -X POST http://localhost:8080/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"echo","priority":"HIGH","payload":{"message":"urgent"}}'
+```
+
+Among retry-eligible queued jobs, workers claim `HIGH`, then `NORMAL`, then
+`LOW`; within each priority they preserve `next_attempt_at`, creation time, and
+ID ordering. This is intentionally strict: uninterrupted high-priority traffic
+can starve normal and low-priority work. Fairness or aging is deferred to a
+later design phase rather than being silently implied here.
+
 ## Concurrent workers
 
 Phase 2 supports multiple worker processes. Each worker claims jobs in a short
@@ -130,12 +170,13 @@ go run ./cmd/worker
 ```
 
 The integration tests create and drop isolated temporary PostgreSQL databases.
-They verify concurrent claims, lease recovery, durable retry eligibility, and
-dead-lettering without timing sleeps:
+They verify concurrent claims, lease recovery, durable retry eligibility,
+dead-lettering, idempotent submission, and strict priority ordering without
+timing sleeps:
 
 ```bash
 RUN_POSTGRES_INTEGRATION=1 go test -race ./internal/postgres \
-  -run 'TestConcurrentWorkersClaimEveryJobOnce|TestExpiredLeaseIsRecoveredWithoutSleeping|TestRetryBecomesEligibleThenDeadLetters|TestNonRetryableFailureIsFailedImmediately'
+  -run 'TestConcurrentWorkersClaimEveryJobOnce|TestExpiredLeaseIsRecoveredWithoutSleeping|TestRetryBecomesEligibleThenDeadLetters|TestNonRetryableFailureIsFailedImmediately|TestIdempotencyKeyCreatesOneJobAndRejectsConflict|TestClaimNextUsesStrictPriorityOrdering'
 ```
 
 Run migrations as a separate deployment step, before starting API or worker
@@ -157,5 +198,4 @@ go run ./cmd/worker
 
 ## Next increment
 
-Phase 5: define idempotency protection for duplicated external side effects
-after a worker crashes or loses its lease before recording success.
+Phase 7: add `run_at` scheduling so future jobs cannot be claimed early.

@@ -39,6 +39,6 @@ func (e *EchoExecutor) Execute(ctx context.Context, job jobs.Job) error {
 		return err
 	}
 
-	e.logger.Info("echo job", "job_id", job.ID, "message", payload.Message)
+	e.logger.Info("echo job", "job_id", job.ID, "effect_key", job.EffectKey(), "message", payload.Message)
 	return nil
 }

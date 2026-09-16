@@ -26,6 +26,20 @@ func TestNewCreatesQueuedJob(t *testing.T) {
 	if job.AttemptCount != 0 || job.MaxAttempts != DefaultMaxAttempts {
 		t.Errorf("new job attempts = %d/%d, want 0/%d", job.AttemptCount, job.MaxAttempts, DefaultMaxAttempts)
 	}
+	if job.Priority != DefaultPriority {
+		t.Errorf("Priority = %s, want %s", job.Priority, DefaultPriority)
+	}
+}
+
+func TestNewWithOptionsValidatesPriority(t *testing.T) {
+	now := time.Now()
+	job, err := NewWithOptions("echo", nil, 3, PriorityHigh, now)
+	if err != nil || job.Priority != PriorityHigh {
+		t.Fatalf("NewWithOptions() = %+v, %v", job, err)
+	}
+	if _, err := NewWithOptions("echo", nil, 3, Priority("URGENT"), now); err != ErrInvalidPriority {
+		t.Errorf("NewWithOptions() error = %v, want %v", err, ErrInvalidPriority)
+	}
 }
 
 func TestNewWithMaxAttempts(t *testing.T) {
@@ -36,6 +50,27 @@ func TestNewWithMaxAttempts(t *testing.T) {
 	}
 	if _, err := NewWithMaxAttempts("echo", nil, 0, now); err != ErrInvalidMaxAttempts {
 		t.Errorf("NewWithMaxAttempts() error = %v, want %v", err, ErrInvalidMaxAttempts)
+	}
+}
+
+func TestIdempotencyKeyAndEffectKey(t *testing.T) {
+	job, err := New("echo", nil, time.Now())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	job.ID = "durable-job-id"
+	if got := job.EffectKey(); got != job.ID {
+		t.Errorf("EffectKey() = %q, want job ID", got)
+	}
+	job, err = job.WithIdempotencyKey("request-42")
+	if err != nil {
+		t.Fatalf("WithIdempotencyKey() error = %v", err)
+	}
+	if got := job.EffectKey(); got != "request-42" {
+		t.Errorf("EffectKey() = %q, want request key", got)
+	}
+	if _, err := job.WithIdempotencyKey(" "); err != ErrInvalidIdempotencyKey {
+		t.Errorf("WithIdempotencyKey() error = %v, want %v", err, ErrInvalidIdempotencyKey)
 	}
 }
 
