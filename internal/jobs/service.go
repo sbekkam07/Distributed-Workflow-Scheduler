@@ -27,7 +27,13 @@ func NewService(repository Repository, now func() time.Time) *Service {
 
 // Submit validates a new job and persists it in the queued state.
 func (s *Service) Submit(ctx context.Context, kind string, payload json.RawMessage) (Job, error) {
-	job, err := New(kind, payload, s.now())
+	return s.SubmitWithMaxAttempts(ctx, kind, payload, DefaultMaxAttempts)
+}
+
+// SubmitWithMaxAttempts validates and persists a job with its total execution
+// budget. The first execution counts as attempt one.
+func (s *Service) SubmitWithMaxAttempts(ctx context.Context, kind string, payload json.RawMessage, maxAttempts int) (Job, error) {
+	job, err := NewWithMaxAttempts(kind, payload, maxAttempts, s.now())
 	if err != nil {
 		return Job{}, err
 	}

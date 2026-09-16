@@ -28,8 +28,9 @@ type handler struct {
 }
 
 type createJobRequest struct {
-	Kind    string          `json:"kind"`
-	Payload json.RawMessage `json:"payload"`
+	Kind        string          `json:"kind"`
+	Payload     json.RawMessage `json:"payload"`
+	MaxAttempts *int            `json:"max_attempts,omitempty"`
 }
 
 func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
@@ -48,9 +49,13 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := h.service.Submit(r.Context(), request.Kind, request.Payload)
+	maxAttempts := jobs.DefaultMaxAttempts
+	if request.MaxAttempts != nil {
+		maxAttempts = *request.MaxAttempts
+	}
+	job, err := h.service.SubmitWithMaxAttempts(r.Context(), request.Kind, request.Payload, maxAttempts)
 	if err != nil {
-		if errors.Is(err, jobs.ErrInvalidKind) || errors.Is(err, jobs.ErrInvalidPayload) {
+		if errors.Is(err, jobs.ErrInvalidKind) || errors.Is(err, jobs.ErrInvalidPayload) || errors.Is(err, jobs.ErrInvalidMaxAttempts) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

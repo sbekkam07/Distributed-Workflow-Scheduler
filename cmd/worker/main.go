@@ -19,6 +19,14 @@ func main() {
 		slog.Error("load configuration", "error", err)
 		return
 	}
+	workerID := cfg.WorkerID
+	if workerID == "" {
+		workerID, err = worker.NewID()
+		if err != nil {
+			slog.Error("generate worker ID", "error", err)
+			return
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -33,7 +41,12 @@ func main() {
 	w, err := worker.New(
 		postgres.NewJobRepository(pool),
 		worker.NewEchoExecutor(slog.Default()),
+		workerID,
 		cfg.WorkerPollInterval,
+		cfg.WorkerLeaseDuration,
+		cfg.WorkerHeartbeatInterval,
+		cfg.WorkerRetryBackoffBase,
+		cfg.WorkerRetryBackoffMax,
 		slog.Default(),
 	)
 	if err != nil {
@@ -41,7 +54,15 @@ func main() {
 		return
 	}
 
-	slog.Info("worker started", "poll_interval", cfg.WorkerPollInterval)
+	slog.Info(
+		"worker started",
+		"worker_id", workerID,
+		"poll_interval", cfg.WorkerPollInterval,
+		"lease_duration", cfg.WorkerLeaseDuration,
+		"heartbeat_interval", cfg.WorkerHeartbeatInterval,
+		"retry_backoff_base", cfg.WorkerRetryBackoffBase,
+		"retry_backoff_max", cfg.WorkerRetryBackoffMax,
+	)
 	if err := w.Run(ctx); err != nil {
 		slog.Error("worker stopped with error", "error", err)
 		return

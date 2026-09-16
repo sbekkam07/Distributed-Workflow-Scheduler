@@ -75,6 +75,7 @@ func TestCreateJobRejectsInvalidRequest(t *testing.T) {
 		`{"kind":"echo","unexpected":true}`,
 		`{"kind":"echo"} {"kind":"second"}`,
 		`not JSON`,
+		`{"kind":"echo","max_attempts":0}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(body))
@@ -86,6 +87,24 @@ func TestCreateJobRejectsInvalidRequest(t *testing.T) {
 				t.Errorf("status = %d, want %d", response.Code, http.StatusBadRequest)
 			}
 		})
+	}
+}
+
+func TestCreateJobAcceptsMaxAttempts(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(`{"kind":"echo","max_attempts":5}`))
+	response := httptest.NewRecorder()
+
+	newTestHandler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusCreated, response.Body.String())
+	}
+	var job jobs.Job
+	if err := json.NewDecoder(response.Body).Decode(&job); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if job.MaxAttempts != 5 {
+		t.Errorf("MaxAttempts = %d, want 5", job.MaxAttempts)
 	}
 }
 

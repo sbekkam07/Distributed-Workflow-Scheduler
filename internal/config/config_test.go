@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoad(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://scheduler:secret@localhost:5432/scheduler?sslmode=disable")
@@ -19,6 +22,40 @@ func TestLoad(t *testing.T) {
 	}
 	if cfg.WorkerPollInterval != defaultWorkerPollInterval {
 		t.Errorf("WorkerPollInterval = %s, want %s", cfg.WorkerPollInterval, defaultWorkerPollInterval)
+	}
+	if cfg.WorkerLeaseDuration != defaultWorkerLeaseDuration || cfg.WorkerHeartbeatInterval != defaultWorkerHeartbeatInterval {
+		t.Errorf("worker lease config = %s/%s, want %s/%s", cfg.WorkerLeaseDuration, cfg.WorkerHeartbeatInterval, defaultWorkerLeaseDuration, defaultWorkerHeartbeatInterval)
+	}
+	if cfg.WorkerRetryBackoffBase != defaultWorkerRetryBackoffBase || cfg.WorkerRetryBackoffMax != defaultWorkerRetryBackoffMax {
+		t.Errorf("worker retry backoff config = %s/%s, want %s/%s", cfg.WorkerRetryBackoffBase, cfg.WorkerRetryBackoffMax, defaultWorkerRetryBackoffBase, defaultWorkerRetryBackoffMax)
+	}
+}
+
+func TestWorkerRetryBackoffConfiguration(t *testing.T) {
+	base, err := workerRetryBackoffBase("2s")
+	if err != nil || base != 2*time.Second {
+		t.Fatalf("workerRetryBackoffBase() = %s, %v", base, err)
+	}
+	if _, err := workerRetryBackoffMax("1s", base); err == nil {
+		t.Fatal("workerRetryBackoffMax() error = nil, want max validation error")
+	}
+	maximum, err := workerRetryBackoffMax("30s", base)
+	if err != nil || maximum != 30*time.Second {
+		t.Fatalf("workerRetryBackoffMax() = %s, %v", maximum, err)
+	}
+}
+
+func TestWorkerLeaseConfiguration(t *testing.T) {
+	lease, err := workerLeaseDuration("15s")
+	if err != nil || lease != 15*time.Second {
+		t.Fatalf("workerLeaseDuration() = %s, %v", lease, err)
+	}
+	if _, err := workerHeartbeatInterval("15s", lease); err == nil {
+		t.Fatal("workerHeartbeatInterval() error = nil, want interval validation error")
+	}
+	interval, err := workerHeartbeatInterval("5s", lease)
+	if err != nil || interval != 5*time.Second {
+		t.Fatalf("workerHeartbeatInterval() = %s, %v", interval, err)
 	}
 }
 

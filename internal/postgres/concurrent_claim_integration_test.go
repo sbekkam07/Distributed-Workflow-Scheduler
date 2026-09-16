@@ -31,8 +31,8 @@ const (
 // semantics in an isolated temporary database. It is opt-in because it creates
 // and drops a database; run it with RUN_POSTGRES_INTEGRATION=1 and DATABASE_URL.
 func TestConcurrentWorkersClaimEveryJobOnce(t *testing.T) {
-	if os.Getenv("RUN_POSTGRES_INTEGRATION") != "1" {
-		t.Skip("set RUN_POSTGRES_INTEGRATION=1 to run PostgreSQL integration tests")
+	if integrationDisabled(t) {
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -67,7 +67,17 @@ func TestConcurrentWorkersClaimEveryJobOnce(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	workers := make([]*worker.Worker, concurrentWorkers)
 	for i := range workers {
-		workers[i], err = worker.New(repository, executor, time.Second, logger)
+		workers[i], err = worker.New(
+			repository,
+			executor,
+			fmt.Sprintf("claim-worker-%d", i),
+			time.Second,
+			10*time.Second,
+			3*time.Second,
+			time.Second,
+			time.Minute,
+			logger,
+		)
 		if err != nil {
 			t.Fatalf("worker.New() error = %v", err)
 		}
@@ -111,6 +121,15 @@ func TestConcurrentWorkersClaimEveryJobOnce(t *testing.T) {
 			t.Errorf("job %q status = %s, want %s", id, job.Status, jobs.StatusSucceeded)
 		}
 	}
+}
+
+func integrationDisabled(t *testing.T) bool {
+	t.Helper()
+	if os.Getenv("RUN_POSTGRES_INTEGRATION") != "1" {
+		t.Skip("set RUN_POSTGRES_INTEGRATION=1 to run PostgreSQL integration tests")
+		return true
+	}
+	return false
 }
 
 type recordingExecutor struct {

@@ -28,15 +28,22 @@ observability components. Do not build this target architecture all at once.
 
 ## Current verified status
 
-Phases 1 and 2 are complete. The repository has Go process entry points, a
+Phases 1–4 are complete. The repository has Go process entry points, a
 `Job` domain state machine, PostgreSQL connection configuration, an embedded
 migration command, an initial `jobs` schema, a PostgreSQL job repository, and
 `POST /jobs` and `GET /jobs/{id}` endpoints. Multiple workers safely claim jobs
 using a short `FOR UPDATE SKIP LOCKED` transaction, then run the `echo` executor
-and persist `SUCCEEDED` or `FAILED`. A real PostgreSQL integration test verifies
-four workers execute 24 jobs exactly once. Phase 3 is not implemented: there is
-no lease owner, expiration, heartbeat, retry, or scheduler feature. Inspect the
-code and tests; the roadmap is not proof that a feature exists.
+and persist `SUCCEEDED` or `FAILED`. A claim records a worker owner, lease
+expiry, and heartbeat; workers recover expired `RUNNING` jobs, and stale owners
+cannot persist a terminal state after recovery. PostgreSQL integration tests
+verify both concurrent claims and deterministic lease recovery. This is
+at-least-once execution, not exactly-once delivery: a side effect can be
+duplicated after a lease expires. Jobs have a bounded total attempt budget;
+retryable failures receive durable exponential backoff through
+`next_attempt_at`, while non-retryable failures are `FAILED` and exhausted
+retryable jobs are `DEAD`. Workers do not sleep for backoff. Idempotency and
+scheduler features are not yet implemented. Inspect the code and tests; the
+roadmap is not proof that a feature exists.
 
 ## Phase boundaries
 
@@ -73,7 +80,8 @@ terminal state is queryable, tests pass, and the database setup is reproducible.
   ```
 
   Every new state or transition needs a reason, domain validation, persistence
-  rules, and tests. `RETRYING` and `DEAD` belong to later phases.
+  rules, and tests. `DEAD` is the Phase 4 dead-letter state; additional retry
+  states belong to later phases.
 - Workers claim work, execute outside the claim transaction, then persist a
   terminal outcome. Never hold a database transaction during execution.
 - Use contexts, graceful shutdown, and structured logs. Never log a

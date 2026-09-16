@@ -25,11 +25,12 @@ func NewJobRepository(pool *pgxpool.Pool) *JobRepository {
 // Create inserts a queued job and returns the database-generated fields.
 func (r *JobRepository) Create(ctx context.Context, job jobs.Job) (jobs.Job, error) {
 	const query = `
-		INSERT INTO jobs (kind, payload)
-		VALUES ($1, $2)
-		RETURNING id, kind, payload, status, error_message, created_at, started_at, completed_at`
+		INSERT INTO jobs (kind, payload, max_attempts)
+		VALUES ($1, $2, $3)
+		RETURNING id, kind, payload, status, error_message, created_at, started_at, completed_at,
+			lease_owner, lease_expires_at, last_heartbeat_at, attempt_count, max_attempts, next_attempt_at`
 
-	created, err := scanJob(r.pool.QueryRow(ctx, query, job.Kind, job.Payload))
+	created, err := scanJob(r.pool.QueryRow(ctx, query, job.Kind, job.Payload, job.MaxAttempts))
 	if err != nil {
 		return jobs.Job{}, fmt.Errorf("insert job: %w", err)
 	}
@@ -39,7 +40,8 @@ func (r *JobRepository) Create(ctx context.Context, job jobs.Job) (jobs.Job, err
 // Get returns a job by its PostgreSQL-generated UUID.
 func (r *JobRepository) Get(ctx context.Context, id string) (jobs.Job, error) {
 	const query = `
-		SELECT id, kind, payload, status, error_message, created_at, started_at, completed_at
+		SELECT id, kind, payload, status, error_message, created_at, started_at, completed_at,
+			lease_owner, lease_expires_at, last_heartbeat_at, attempt_count, max_attempts, next_attempt_at
 		FROM jobs
 		WHERE id = $1`
 
@@ -58,7 +60,7 @@ func (r *JobRepository) Get(ctx context.Context, id string) (jobs.Job, error) {
 // FOR UPDATE SKIP LOCKED lets concurrent workers move past a row another worker
 // is claiming instead of blocking or reading it as available. The transaction
 // ends before the job is executed, so database locks never span user work.
-func (r *JobRepository) ClaimNext(ctx context.Context) (jobs.Job, bool, error) {
+func (r *JobRepository) ClaimNext(ctx context.Context, owner string, leaseDuration time.Duration) (jobs.Job, bool, error) {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return jobs.Job{}, false, fmt.Errorf("begin job claim: %w", err)
@@ -69,7 +71,9 @@ func (r *JobRepository) ClaimNext(ctx context.Context) (jobs.Job, bool, error) {
 		SELECT id
 		FROM jobs
 		WHERE status = 'QUEUED'
-		ORDER BY created_at ASC, id ASC
+			AND next_attempt_at <= now()
+			AND attempt_count < max_attempts
+		ORDER BY next_attempt_at ASC, created_at ASC, id ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1`
 
@@ -83,11 +87,18 @@ func (r *JobRepository) ClaimNext(ctx context.Context) (jobs.Job, bool, error) {
 
 	const updateQuery = `
 		UPDATE jobs
-		SET status = 'RUNNING', started_at = now()
+		SET status = 'RUNNING',
+			started_at = now(),
+			attempt_count = attempt_count + 1,
+			next_attempt_at = NULL,
+			lease_owner = $2,
+			lease_expires_at = now() + ($3 * INTERVAL '1 microsecond'),
+			last_heartbeat_at = now()
 		WHERE id = $1 AND status = 'QUEUED'
-		RETURNING id, kind, payload, status, error_message, created_at, started_at, completed_at`
+		RETURNING id, kind, payload, status, error_message, created_at, started_at, completed_at,
+			lease_owner, lease_expires_at, last_heartbeat_at, attempt_count, max_attempts, next_attempt_at`
 
-	job, err := scanJob(tx.QueryRow(ctx, updateQuery, id))
+	job, err := scanJob(tx.QueryRow(ctx, updateQuery, id, owner, leaseDuration.Microseconds()))
 	if err != nil {
 		return jobs.Job{}, false, fmt.Errorf("mark claimed job running: %w", err)
 	}
@@ -98,39 +109,110 @@ func (r *JobRepository) ClaimNext(ctx context.Context) (jobs.Job, bool, error) {
 	return job, true, nil
 }
 
-// MarkSucceeded records successful execution. It only updates the worker's
-// expected RUNNING state so a stale worker cannot overwrite another outcome.
-func (r *JobRepository) MarkSucceeded(ctx context.Context, id string) error {
+// RecordFailure records a failed execution. Retryable failures remain queued
+// until their backoff expires; the final retryable failure becomes DEAD. A
+// non-retryable failure becomes FAILED immediately.
+func (r *JobRepository) RecordFailure(ctx context.Context, id, owner, message string, retryable bool, retryDelay time.Duration) (jobs.Status, error) {
 	const query = `
 		UPDATE jobs
-		SET status = 'SUCCEEDED', completed_at = now(), error_message = NULL
-		WHERE id = $1 AND status = 'RUNNING'`
+		SET status = CASE
+				WHEN $4 AND attempt_count < max_attempts THEN 'QUEUED'
+				WHEN $4 THEN 'DEAD'
+				ELSE 'FAILED'
+			END,
+			started_at = CASE WHEN $4 AND attempt_count < max_attempts THEN NULL ELSE started_at END,
+			completed_at = CASE WHEN $4 AND attempt_count < max_attempts THEN NULL ELSE now() END,
+			error_message = CASE WHEN $4 AND attempt_count < max_attempts THEN NULL ELSE $3 END,
+			next_attempt_at = CASE
+				WHEN $4 AND attempt_count < max_attempts THEN now() + ($5 * INTERVAL '1 microsecond')
+				ELSE NULL
+			END,
+			lease_owner = NULL,
+			lease_expires_at = NULL,
+			last_heartbeat_at = NULL
+		WHERE id = $1
+			AND status = 'RUNNING'
+			AND lease_owner = $2
+			AND lease_expires_at > now()
+		RETURNING status`
 
-	result, err := r.pool.Exec(ctx, query, id)
+	var status string
+	err := r.pool.QueryRow(ctx, query, id, owner, message, retryable, retryDelay.Microseconds()).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", jobs.ErrLeaseLost
+	}
+	if err != nil {
+		return "", fmt.Errorf("record job failure: %w", err)
+	}
+	return jobs.Status(status), nil
+}
+
+// MarkSucceeded records successful execution. It only updates the worker's
+// expected RUNNING state so a stale worker cannot overwrite another outcome.
+func (r *JobRepository) MarkSucceeded(ctx context.Context, id, owner string) error {
+	const query = `
+		UPDATE jobs
+		SET status = 'SUCCEEDED',
+			completed_at = now(),
+			error_message = NULL,
+			lease_owner = NULL,
+			lease_expires_at = NULL,
+			last_heartbeat_at = NULL
+		WHERE id = $1
+			AND status = 'RUNNING'
+			AND lease_owner = $2
+			AND lease_expires_at > now()`
+
+	result, err := r.pool.Exec(ctx, query, id, owner)
 	if err != nil {
 		return fmt.Errorf("mark job succeeded: %w", err)
 	}
 	if result.RowsAffected() != 1 {
-		return jobs.ErrNotRunning
+		return jobs.ErrLeaseLost
 	}
 	return nil
 }
 
-// MarkFailed records an execution failure. It only updates RUNNING jobs.
-func (r *JobRepository) MarkFailed(ctx context.Context, id, message string) error {
+// RenewLease extends the lease only when owner still owns an unexpired running
+// job. A false result means the worker must stop treating the job as its own.
+func (r *JobRepository) RenewLease(ctx context.Context, id, owner string, leaseDuration time.Duration) (bool, error) {
 	const query = `
 		UPDATE jobs
-		SET status = 'FAILED', completed_at = now(), error_message = $2
-		WHERE id = $1 AND status = 'RUNNING'`
+		SET lease_expires_at = now() + ($3 * INTERVAL '1 microsecond'),
+			last_heartbeat_at = now()
+		WHERE id = $1
+			AND status = 'RUNNING'
+			AND lease_owner = $2
+			AND lease_expires_at > now()`
 
-	result, err := r.pool.Exec(ctx, query, id, message)
+	result, err := r.pool.Exec(ctx, query, id, owner, leaseDuration.Microseconds())
 	if err != nil {
-		return fmt.Errorf("mark job failed: %w", err)
+		return false, fmt.Errorf("renew job lease: %w", err)
 	}
-	if result.RowsAffected() != 1 {
-		return jobs.ErrNotRunning
+	return result.RowsAffected() == 1, nil
+}
+
+// RecoverExpired returns jobs whose running lease has expired to the queue.
+// A worker that later wakes up cannot write a terminal state because its owner
+// and expiry checks will no longer match.
+func (r *JobRepository) RecoverExpired(ctx context.Context) (int64, error) {
+	const query = `
+		UPDATE jobs
+		SET status = CASE WHEN attempt_count < max_attempts THEN 'QUEUED' ELSE 'DEAD' END,
+			started_at = CASE WHEN attempt_count < max_attempts THEN NULL ELSE started_at END,
+			completed_at = CASE WHEN attempt_count < max_attempts THEN NULL ELSE now() END,
+			error_message = CASE WHEN attempt_count < max_attempts THEN NULL ELSE 'worker lease expired after maximum attempts' END,
+			next_attempt_at = CASE WHEN attempt_count < max_attempts THEN now() ELSE NULL END,
+			lease_owner = NULL,
+			lease_expires_at = NULL,
+			last_heartbeat_at = NULL
+		WHERE status = 'RUNNING' AND lease_expires_at <= now()`
+
+	result, err := r.pool.Exec(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("recover expired job leases: %w", err)
 	}
-	return nil
+	return result.RowsAffected(), nil
 }
 
 type rowScanner interface {
@@ -139,12 +221,15 @@ type rowScanner interface {
 
 func scanJob(row rowScanner) (jobs.Job, error) {
 	var (
-		job         jobs.Job
-		payload     []byte
-		status      string
-		errorText   *string
-		startedAt   *time.Time
-		completedAt *time.Time
+		job             jobs.Job
+		payload         []byte
+		status          string
+		errorText       *string
+		startedAt       *time.Time
+		completedAt     *time.Time
+		leaseOwner      *string
+		leaseExpiresAt  *time.Time
+		lastHeartbeatAt *time.Time
 	)
 
 	if err := row.Scan(
@@ -156,6 +241,12 @@ func scanJob(row rowScanner) (jobs.Job, error) {
 		&job.CreatedAt,
 		&startedAt,
 		&completedAt,
+		&leaseOwner,
+		&leaseExpiresAt,
+		&lastHeartbeatAt,
+		&job.AttemptCount,
+		&job.MaxAttempts,
+		&job.NextAttemptAt,
 	); err != nil {
 		return jobs.Job{}, err
 	}
@@ -165,5 +256,8 @@ func scanJob(row rowScanner) (jobs.Job, error) {
 	job.ErrorMessage = errorText
 	job.StartedAt = startedAt
 	job.CompletedAt = completedAt
+	job.LeaseOwner = leaseOwner
+	job.LeaseExpiresAt = leaseExpiresAt
+	job.LastHeartbeatAt = lastHeartbeatAt
 	return job, nil
 }
