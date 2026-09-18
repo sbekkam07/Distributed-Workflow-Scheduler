@@ -43,11 +43,11 @@ func (r *memoryRepository) Get(_ context.Context, _ string) (Job, error) {
 func TestServiceSubmitIdempotently(t *testing.T) {
 	repository := &memoryRepository{}
 	service := NewService(repository, time.Now)
-	first, err := service.SubmitIdempotently(context.Background(), "echo", json.RawMessage(`{"message":"once"}`), 3, PriorityNormal, "request-key")
+	first, err := service.SubmitIdempotently(context.Background(), "echo", json.RawMessage(`{"message":"once"}`), 3, PriorityNormal, time.Now(), "request-key")
 	if err != nil || !first.Created {
 		t.Fatalf("first SubmitIdempotently() = %+v, %v", first, err)
 	}
-	second, err := service.SubmitIdempotently(context.Background(), "echo", json.RawMessage(`{"message":"once"}`), 3, PriorityNormal, "request-key")
+	second, err := service.SubmitIdempotently(context.Background(), "echo", json.RawMessage(`{"message":"once"}`), 3, PriorityNormal, time.Now(), "request-key")
 	if err != nil || second.Created || second.Job.ID != first.Job.ID {
 		t.Fatalf("second SubmitIdempotently() = %+v, %v", second, err)
 	}

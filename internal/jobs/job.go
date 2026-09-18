@@ -82,6 +82,7 @@ type Job struct {
 	NextAttemptAt   *time.Time      `json:"next_attempt_at,omitempty"`
 	IdempotencyKey  *string         `json:"idempotency_key,omitempty"`
 	Priority        Priority        `json:"priority"`
+	RunAt           time.Time       `json:"run_at"`
 }
 
 // New creates a queued job that is ready for a worker to claim.
@@ -97,6 +98,12 @@ func NewWithMaxAttempts(kind string, payload json.RawMessage, maxAttempts int, n
 
 // NewWithOptions creates a queued job with an execution budget and priority.
 func NewWithOptions(kind string, payload json.RawMessage, maxAttempts int, priority Priority, now time.Time) (Job, error) {
+	return NewWithSchedule(kind, payload, maxAttempts, priority, now, now)
+}
+
+// NewWithSchedule creates a queued job that cannot be claimed before runAt.
+// A time in the past is valid and makes work eligible immediately.
+func NewWithSchedule(kind string, payload json.RawMessage, maxAttempts int, priority Priority, runAt, now time.Time) (Job, error) {
 	if strings.TrimSpace(kind) == "" {
 		return Job{}, ErrInvalidKind
 	}
@@ -122,6 +129,7 @@ func NewWithOptions(kind string, payload json.RawMessage, maxAttempts int, prior
 		MaxAttempts:   maxAttempts,
 		NextAttemptAt: timePointer(now.UTC()),
 		Priority:      priority,
+		RunAt:         runAt.UTC(),
 	}, nil
 }
 

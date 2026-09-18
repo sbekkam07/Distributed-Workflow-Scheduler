@@ -4,13 +4,14 @@ A Go workflow scheduler built incrementally to explore reliable job execution.
 
 ## Current phase
 
-Phases 1–6 complete: workers poll PostgreSQL, transactionally claim queued
+Phases 1–7 complete: workers poll PostgreSQL, transactionally claim queued
 jobs, run the initial `echo` executor, and record final state. PostgreSQL row
 locks prevent simultaneous claims, while leases and heartbeats let another
 worker recover work left `RUNNING` after a worker disappears. Retryable failures
 wait durably with exponential backoff; exhausted jobs are dead-lettered.
 Clients and external-effect executors have stable idempotency keys.
 Eligible jobs use strict `HIGH`, `NORMAL`, then `LOW` claim priority.
+Scheduled jobs remain in the durable queue until their `run_at` time arrives.
 
 ## Layout
 
@@ -159,6 +160,21 @@ ID ordering. This is intentionally strict: uninterrupted high-priority traffic
 can starve normal and low-priority work. Fairness or aging is deferred to a
 later design phase rather than being silently implied here.
 
+## Scheduling
+
+Jobs are eligible only at or after `run_at`. Omit it for immediate execution,
+or submit an RFC 3339 timestamp for future work:
+
+```bash
+curl -X POST http://localhost:8080/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"echo","run_at":"2026-09-20T15:00:00Z","payload":{"message":"later"}}'
+```
+
+The worker continues normal polling; it does not reserve, claim, or sleep on a
+future job. A retry is eligible only after both its original `run_at` and its
+retry `next_attempt_at` are due. Recurring schedules are intentionally deferred.
+
 ## Concurrent workers
 
 Phase 2 supports multiple worker processes. Each worker claims jobs in a short
@@ -171,12 +187,12 @@ go run ./cmd/worker
 
 The integration tests create and drop isolated temporary PostgreSQL databases.
 They verify concurrent claims, lease recovery, durable retry eligibility,
-dead-lettering, idempotent submission, and strict priority ordering without
-timing sleeps:
+dead-lettering, idempotent submission, strict priority ordering, and future-job
+eligibility without timing sleeps:
 
 ```bash
 RUN_POSTGRES_INTEGRATION=1 go test -race ./internal/postgres \
-  -run 'TestConcurrentWorkersClaimEveryJobOnce|TestExpiredLeaseIsRecoveredWithoutSleeping|TestRetryBecomesEligibleThenDeadLetters|TestNonRetryableFailureIsFailedImmediately|TestIdempotencyKeyCreatesOneJobAndRejectsConflict|TestClaimNextUsesStrictPriorityOrdering'
+  -run 'TestConcurrentWorkersClaimEveryJobOnce|TestExpiredLeaseIsRecoveredWithoutSleeping|TestRetryBecomesEligibleThenDeadLetters|TestNonRetryableFailureIsFailedImmediately|TestIdempotencyKeyCreatesOneJobAndRejectsConflict|TestClaimNextUsesStrictPriorityOrdering|TestFutureJobIsNotClaimedEarly'
 ```
 
 Run migrations as a separate deployment step, before starting API or worker
@@ -198,4 +214,5 @@ go run ./cmd/worker
 
 ## Next increment
 
-Phase 7: add `run_at` scheduling so future jobs cannot be claimed early.
+Phase 8: add DAG workflow dependencies, readiness discovery, and explicit
+failure policy.

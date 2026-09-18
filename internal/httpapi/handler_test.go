@@ -141,6 +141,25 @@ func TestCreateJobAcceptsPriority(t *testing.T) {
 	}
 }
 
+func TestCreateJobAcceptsRunAt(t *testing.T) {
+	runAt := "2026-09-20T12:00:00Z"
+	request := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(`{"kind":"echo","run_at":"`+runAt+`"}`))
+	response := httptest.NewRecorder()
+
+	newTestHandler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusCreated, response.Body.String())
+	}
+	var job jobs.Job
+	if err := json.NewDecoder(response.Body).Decode(&job); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if job.RunAt.Format(time.RFC3339) != runAt {
+		t.Errorf("RunAt = %s, want %s", job.RunAt, runAt)
+	}
+}
+
 func TestCreateJobIdempotencyKeyReturnsOriginalJob(t *testing.T) {
 	handler := newTestHandler()
 	body := `{"kind":"echo","payload":{"message":"hello"}}`

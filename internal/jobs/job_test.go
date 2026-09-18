@@ -42,6 +42,18 @@ func TestNewWithOptionsValidatesPriority(t *testing.T) {
 	}
 }
 
+func TestNewWithScheduleKeepsRunAt(t *testing.T) {
+	now := time.Now().UTC()
+	runAt := now.Add(time.Hour)
+	job, err := NewWithSchedule("echo", nil, 3, PriorityHigh, runAt, now)
+	if err != nil {
+		t.Fatalf("NewWithSchedule() error = %v", err)
+	}
+	if !job.RunAt.Equal(runAt) {
+		t.Errorf("RunAt = %s, want %s", job.RunAt, runAt)
+	}
+}
+
 func TestNewWithMaxAttempts(t *testing.T) {
 	now := time.Date(2026, time.September, 13, 14, 30, 0, 0, time.UTC)
 	job, err := NewWithMaxAttempts("echo", nil, 5, now)

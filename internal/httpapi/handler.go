@@ -32,6 +32,7 @@ type createJobRequest struct {
 	Payload     json.RawMessage `json:"payload"`
 	MaxAttempts *int            `json:"max_attempts,omitempty"`
 	Priority    *string         `json:"priority,omitempty"`
+	RunAt       *time.Time      `json:"run_at,omitempty"`
 }
 
 func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
@@ -58,9 +59,13 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 	if request.Priority != nil {
 		priority = jobs.Priority(*request.Priority)
 	}
+	runAt := time.Now()
+	if request.RunAt != nil {
+		runAt = *request.RunAt
+	}
 	key := r.Header.Get("Idempotency-Key")
 	if key != "" {
-		submission, err := h.service.SubmitIdempotently(r.Context(), request.Kind, request.Payload, maxAttempts, priority, key)
+		submission, err := h.service.SubmitIdempotently(r.Context(), request.Kind, request.Payload, maxAttempts, priority, runAt, key)
 		if err != nil {
 			writeCreateJobError(w, err)
 			return
@@ -73,7 +78,7 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := h.service.SubmitWithOptions(r.Context(), request.Kind, request.Payload, maxAttempts, priority)
+	job, err := h.service.SubmitWithSchedule(r.Context(), request.Kind, request.Payload, maxAttempts, priority, runAt)
 	if err != nil {
 		writeCreateJobError(w, err)
 		return

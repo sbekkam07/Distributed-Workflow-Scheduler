@@ -28,7 +28,7 @@ observability components. Do not build this target architecture all at once.
 
 ## Current verified status
 
-Phases 1–6 are complete. The repository has Go process entry points, a
+Phases 1–7 are complete. The repository has Go process entry points, a
 `Job` domain state machine, PostgreSQL connection configuration, an embedded
 migration command, an initial `jobs` schema, a PostgreSQL job repository, and
 `POST /jobs` and `GET /jobs/{id}` endpoints. Multiple workers safely claim jobs
@@ -49,8 +49,11 @@ project still provides at-least-once, not global exactly-once, execution.
 Eligible work is claimed in strict `HIGH`, `NORMAL`, then `LOW` priority order,
 with an index matching the claim predicate and ordering. This can starve lower
 priorities under sustained high-priority load; the project does not make a
-fairness claim. Scheduling features are not yet implemented. Inspect the code
-and tests; the roadmap is not proof that a feature exists.
+fairness claim. Each job has a durable `run_at`; workers claim it only when its
+schedule and retry eligibility are both due. The availability index matches the
+claim predicate and strict-priority ordering. Recurring schedules and workflow
+dependencies are not yet implemented. Inspect the code and tests; the roadmap
+is not proof that a feature exists.
 
 ## Phase boundaries
 

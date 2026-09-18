@@ -47,7 +47,13 @@ func (s *Service) SubmitWithMaxAttempts(ctx context.Context, kind string, payloa
 // SubmitWithOptions validates and persists a job with its execution budget and
 // priority.
 func (s *Service) SubmitWithOptions(ctx context.Context, kind string, payload json.RawMessage, maxAttempts int, priority Priority) (Job, error) {
-	job, err := NewWithOptions(kind, payload, maxAttempts, priority, s.now())
+	return s.SubmitWithSchedule(ctx, kind, payload, maxAttempts, priority, s.now())
+}
+
+// SubmitWithSchedule validates and persists a job that cannot run before
+// runAt. The worker still applies retry eligibility independently.
+func (s *Service) SubmitWithSchedule(ctx context.Context, kind string, payload json.RawMessage, maxAttempts int, priority Priority, runAt time.Time) (Job, error) {
+	job, err := NewWithSchedule(kind, payload, maxAttempts, priority, runAt, s.now())
 	if err != nil {
 		return Job{}, err
 	}
@@ -56,8 +62,8 @@ func (s *Service) SubmitWithOptions(ctx context.Context, kind string, payload js
 
 // SubmitIdempotently creates a job once for key. Repeating the same request
 // returns the original job; reusing key for different work is rejected.
-func (s *Service) SubmitIdempotently(ctx context.Context, kind string, payload json.RawMessage, maxAttempts int, priority Priority, key string) (Submission, error) {
-	job, err := NewWithOptions(kind, payload, maxAttempts, priority, s.now())
+func (s *Service) SubmitIdempotently(ctx context.Context, kind string, payload json.RawMessage, maxAttempts int, priority Priority, runAt time.Time, key string) (Submission, error) {
+	job, err := NewWithSchedule(kind, payload, maxAttempts, priority, runAt, s.now())
 	if err != nil {
 		return Submission{}, err
 	}
