@@ -4,7 +4,7 @@ A Go workflow scheduler built incrementally to explore reliable job execution.
 
 ## Current phase
 
-Phases 1–7 complete: workers poll PostgreSQL, transactionally claim queued
+Phases 1–9 complete: workers poll PostgreSQL, transactionally claim queued
 jobs, run the initial `echo` executor, and record final state. PostgreSQL row
 locks prevent simultaneous claims, while leases and heartbeats let another
 worker recover work left `RUNNING` after a worker disappears. Retryable failures
@@ -12,12 +12,15 @@ wait durably with exponential backoff; exhausted jobs are dead-lettered.
 Clients and external-effect executors have stable idempotency keys.
 Eligible jobs use strict `HIGH`, `NORMAL`, then `LOW` claim priority.
 Scheduled jobs remain in the durable queue until their `run_at` time arrives.
+Jobs can form immutable dependency DAGs with explicit failure propagation.
+A separate scheduler uses PostgreSQL-backed leadership for that reconciliation.
 
 ## Layout
 
 ```text
 cmd/
   api/        API process entry point
+  scheduler/  Leader-only workflow coordination entry point
   worker/     Worker process entry point
 internal/
   config/     Process configuration
@@ -40,6 +43,7 @@ QUEUED -> RUNNING -> SUCCEEDED
                   -> FAILED
                   -> QUEUED (retryable failure, after backoff)
                   -> DEAD   (retry budget exhausted)
+QUEUED -> BLOCKED  (a prerequisite did not succeed)
 ```
 
 `jobs` keeps this state machine explicit in Go, and the database migration
@@ -175,6 +179,41 @@ The worker continues normal polling; it does not reserve, claim, or sleep on a
 future job. A retry is eligible only after both its original `run_at` and its
 retry `next_attempt_at` are due. Recurring schedules are intentionally deferred.
 
+## Workflow dependencies
+
+Use `depends_on` to make a new job wait for existing prerequisite job IDs:
+
+```bash
+curl -X POST http://localhost:8080/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"echo","depends_on":["<prerequisite-job-id>"],"payload":{"message":"after prerequisite"}}'
+```
+
+Dependency edges are immutable and may point only to already-existing jobs, so
+cycles cannot be introduced through the API. A dependent is eligible only when
+every prerequisite is `SUCCEEDED`. The explicit failure policy is fail-fast:
+if any prerequisite is `FAILED`, `DEAD`, or `BLOCKED`, the dependent becomes
+terminal `BLOCKED` with no execution attempt. This scheduler does not yet
+implement recurring workflows or dynamic dependency edits.
+
+## Scheduler leadership
+
+Run one or more scheduler processes alongside workers. PostgreSQL allows only
+one to hold the session advisory lock, so only its leader reconciles failed DAG
+descendants. If that process or its database session disappears, PostgreSQL
+releases the lock and another scheduler acquires it on a later poll. Configure
+the polling interval with `SCHEDULER_POLL_INTERVAL` (default `500ms`):
+
+```bash
+go run ./cmd/scheduler
+```
+
+This is deliberately narrow leadership: workers still claim jobs independently
+with row locks. Advisory locks are not fencing tokens, so they must not guard a
+non-idempotent external effect. The only leader operation here is a conditional
+database update, which remains safe to retry if a network failure makes a
+leader's result uncertain.
+
 ## Concurrent workers
 
 Phase 2 supports multiple worker processes. Each worker claims jobs in a short
@@ -187,12 +226,12 @@ go run ./cmd/worker
 
 The integration tests create and drop isolated temporary PostgreSQL databases.
 They verify concurrent claims, lease recovery, durable retry eligibility,
-dead-lettering, idempotent submission, strict priority ordering, and future-job
-eligibility without timing sleeps:
+dead-lettering, idempotent submission, strict priority ordering, future-job
+eligibility, plus DAG readiness and failure propagation, without timing sleeps:
 
 ```bash
 RUN_POSTGRES_INTEGRATION=1 go test -race ./internal/postgres \
-  -run 'TestConcurrentWorkersClaimEveryJobOnce|TestExpiredLeaseIsRecoveredWithoutSleeping|TestRetryBecomesEligibleThenDeadLetters|TestNonRetryableFailureIsFailedImmediately|TestIdempotencyKeyCreatesOneJobAndRejectsConflict|TestClaimNextUsesStrictPriorityOrdering|TestFutureJobIsNotClaimedEarly'
+  -run 'TestConcurrentWorkersClaimEveryJobOnce|TestExpiredLeaseIsRecoveredWithoutSleeping|TestRetryBecomesEligibleThenDeadLetters|TestNonRetryableFailureIsFailedImmediately|TestIdempotencyKeyCreatesOneJobAndRejectsConflict|TestClaimNextUsesStrictPriorityOrdering|TestFutureJobIsNotClaimedEarly|TestDependenciesRequireSuccessAndPropagateFailure|TestSchedulerLeadershipIsExclusiveAndFailsOver'
 ```
 
 Run migrations as a separate deployment step, before starting API or worker
@@ -210,9 +249,10 @@ be used to review distributed-systems design, PostgreSQL changes, and tests.
 go test -race ./...
 go run ./cmd/api
 go run ./cmd/worker
+go run ./cmd/scheduler
 ```
 
 ## Next increment
 
-Phase 8: add DAG workflow dependencies, readiness discovery, and explicit
-failure policy.
+Phase 10: add useful Prometheus metrics and Grafana dashboards tied to
+operational questions.

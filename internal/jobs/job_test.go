@@ -54,6 +54,21 @@ func TestNewWithScheduleKeepsRunAt(t *testing.T) {
 	}
 }
 
+func TestValidateDependencies(t *testing.T) {
+	validID := "d1ec071d-67f7-4aad-ae55-054c1ef3785e"
+	if err := ValidateDependencies([]string{validID}); err != nil {
+		t.Fatalf("ValidateDependencies() error = %v", err)
+	}
+	for _, dependencies := range [][]string{
+		{"not-a-uuid"},
+		{validID, validID},
+	} {
+		if err := ValidateDependencies(dependencies); err != ErrInvalidDependencies {
+			t.Errorf("ValidateDependencies(%v) error = %v, want %v", dependencies, err, ErrInvalidDependencies)
+		}
+	}
+}
+
 func TestNewWithMaxAttempts(t *testing.T) {
 	now := time.Date(2026, time.September, 13, 14, 30, 0, 0, time.UTC)
 	job, err := NewWithMaxAttempts("echo", nil, 5, now)

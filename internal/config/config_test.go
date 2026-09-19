@@ -29,6 +29,9 @@ func TestLoad(t *testing.T) {
 	if cfg.WorkerRetryBackoffBase != defaultWorkerRetryBackoffBase || cfg.WorkerRetryBackoffMax != defaultWorkerRetryBackoffMax {
 		t.Errorf("worker retry backoff config = %s/%s, want %s/%s", cfg.WorkerRetryBackoffBase, cfg.WorkerRetryBackoffMax, defaultWorkerRetryBackoffBase, defaultWorkerRetryBackoffMax)
 	}
+	if cfg.SchedulerPollInterval != defaultSchedulerPollInterval {
+		t.Errorf("SchedulerPollInterval = %s, want %s", cfg.SchedulerPollInterval, defaultSchedulerPollInterval)
+	}
 }
 
 func TestWorkerRetryBackoffConfiguration(t *testing.T) {
@@ -74,6 +77,26 @@ func TestWorkerPollInterval(t *testing.T) {
 			_, err := workerPollInterval(test.value)
 			if (err != nil) != test.bad {
 				t.Errorf("workerPollInterval(%q) error = %v, want bad = %t", test.value, err, test.bad)
+			}
+		})
+	}
+}
+
+func TestSchedulerPollInterval(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value string
+		bad   bool
+	}{
+		{name: "default"},
+		{name: "valid", value: "250ms"},
+		{name: "zero", value: "0s", bad: true},
+		{name: "invalid", value: "quickly", bad: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := schedulerPollInterval(test.value)
+			if (err != nil) != test.bad {
+				t.Errorf("schedulerPollInterval(%q) error = %v, want bad = %t", test.value, err, test.bad)
 			}
 		})
 	}

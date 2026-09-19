@@ -33,6 +33,7 @@ type createJobRequest struct {
 	MaxAttempts *int            `json:"max_attempts,omitempty"`
 	Priority    *string         `json:"priority,omitempty"`
 	RunAt       *time.Time      `json:"run_at,omitempty"`
+	DependsOn   []string        `json:"depends_on,omitempty"`
 }
 
 func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +66,7 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.Header.Get("Idempotency-Key")
 	if key != "" {
-		submission, err := h.service.SubmitIdempotently(r.Context(), request.Kind, request.Payload, maxAttempts, priority, runAt, key)
+		submission, err := h.service.SubmitIdempotently(r.Context(), request.Kind, request.Payload, maxAttempts, priority, runAt, request.DependsOn, key)
 		if err != nil {
 			writeCreateJobError(w, err)
 			return
@@ -78,7 +79,7 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := h.service.SubmitWithSchedule(r.Context(), request.Kind, request.Payload, maxAttempts, priority, runAt)
+	job, err := h.service.SubmitWithDependencies(r.Context(), request.Kind, request.Payload, maxAttempts, priority, runAt, request.DependsOn)
 	if err != nil {
 		writeCreateJobError(w, err)
 		return
@@ -88,7 +89,7 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 
 func writeCreateJobError(w http.ResponseWriter, err error) {
 	if err != nil {
-		if errors.Is(err, jobs.ErrInvalidKind) || errors.Is(err, jobs.ErrInvalidPayload) || errors.Is(err, jobs.ErrInvalidMaxAttempts) || errors.Is(err, jobs.ErrInvalidIdempotencyKey) || errors.Is(err, jobs.ErrInvalidPriority) {
+		if errors.Is(err, jobs.ErrInvalidKind) || errors.Is(err, jobs.ErrInvalidPayload) || errors.Is(err, jobs.ErrInvalidMaxAttempts) || errors.Is(err, jobs.ErrInvalidIdempotencyKey) || errors.Is(err, jobs.ErrInvalidPriority) || errors.Is(err, jobs.ErrInvalidDependencies) || errors.Is(err, jobs.ErrDependencyNotFound) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

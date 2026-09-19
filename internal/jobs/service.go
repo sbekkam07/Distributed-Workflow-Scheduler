@@ -11,6 +11,8 @@ import (
 type Repository interface {
 	Create(context.Context, Job) (Job, error)
 	CreateOrGet(context.Context, Job) (Job, bool, error)
+	CreateWithDependencies(context.Context, Job, []string) (Job, error)
+	CreateOrGetWithDependencies(context.Context, Job, []string) (Job, bool, error)
 	Get(context.Context, string) (Job, error)
 }
 
@@ -53,16 +55,28 @@ func (s *Service) SubmitWithOptions(ctx context.Context, kind string, payload js
 // SubmitWithSchedule validates and persists a job that cannot run before
 // runAt. The worker still applies retry eligibility independently.
 func (s *Service) SubmitWithSchedule(ctx context.Context, kind string, payload json.RawMessage, maxAttempts int, priority Priority, runAt time.Time) (Job, error) {
+	return s.SubmitWithDependencies(ctx, kind, payload, maxAttempts, priority, runAt, nil)
+}
+
+// SubmitWithDependencies creates a job whose prerequisites must all succeed
+// before it becomes eligible for claim.
+func (s *Service) SubmitWithDependencies(ctx context.Context, kind string, payload json.RawMessage, maxAttempts int, priority Priority, runAt time.Time, dependsOn []string) (Job, error) {
+	if err := ValidateDependencies(dependsOn); err != nil {
+		return Job{}, err
+	}
 	job, err := NewWithSchedule(kind, payload, maxAttempts, priority, runAt, s.now())
 	if err != nil {
 		return Job{}, err
 	}
-	return s.repository.Create(ctx, job)
+	return s.repository.CreateWithDependencies(ctx, job, dependsOn)
 }
 
 // SubmitIdempotently creates a job once for key. Repeating the same request
 // returns the original job; reusing key for different work is rejected.
-func (s *Service) SubmitIdempotently(ctx context.Context, kind string, payload json.RawMessage, maxAttempts int, priority Priority, runAt time.Time, key string) (Submission, error) {
+func (s *Service) SubmitIdempotently(ctx context.Context, kind string, payload json.RawMessage, maxAttempts int, priority Priority, runAt time.Time, dependsOn []string, key string) (Submission, error) {
+	if err := ValidateDependencies(dependsOn); err != nil {
+		return Submission{}, err
+	}
 	job, err := NewWithSchedule(kind, payload, maxAttempts, priority, runAt, s.now())
 	if err != nil {
 		return Submission{}, err
@@ -71,7 +85,7 @@ func (s *Service) SubmitIdempotently(ctx context.Context, kind string, payload j
 	if err != nil {
 		return Submission{}, err
 	}
-	persisted, created, err := s.repository.CreateOrGet(ctx, job)
+	persisted, created, err := s.repository.CreateOrGetWithDependencies(ctx, job, dependsOn)
 	if err != nil {
 		return Submission{}, err
 	}

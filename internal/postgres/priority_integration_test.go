@@ -34,7 +34,8 @@ func TestClaimNextUsesStrictPriorityOrdering(t *testing.T) {
 
 	created := make(map[jobs.Priority]jobs.Job, 3)
 	for _, priority := range []jobs.Priority{jobs.PriorityLow, jobs.PriorityNormal, jobs.PriorityHigh} {
-		job, err := jobs.NewWithOptions("echo", json.RawMessage(`{"message":"priority"}`), 3, priority, time.Now())
+		now := time.Now()
+		job, err := jobs.NewWithSchedule("echo", json.RawMessage(`{"message":"priority"}`), 3, priority, now.Add(-time.Hour), now)
 		if err != nil {
 			t.Fatalf("NewWithOptions(%s): %v", priority, err)
 		}

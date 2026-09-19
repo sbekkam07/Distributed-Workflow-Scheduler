@@ -46,6 +46,25 @@ func (r *fakeRepository) CreateOrGet(ctx context.Context, job jobs.Job) (jobs.Jo
 	return created, true, err
 }
 
+func (r *fakeRepository) CreateWithDependencies(ctx context.Context, job jobs.Job, dependencies []string) (jobs.Job, error) {
+	created, err := r.Create(ctx, job)
+	created.DependsOn = append([]string(nil), dependencies...)
+	r.jobs[created.ID] = created
+	return created, err
+}
+
+func (r *fakeRepository) CreateOrGetWithDependencies(ctx context.Context, job jobs.Job, dependencies []string) (jobs.Job, bool, error) {
+	persisted, created, err := r.CreateOrGet(ctx, job)
+	if err != nil {
+		return jobs.Job{}, false, err
+	}
+	if created {
+		persisted.DependsOn = append([]string(nil), dependencies...)
+		r.jobs[persisted.ID] = persisted
+	}
+	return persisted, created, nil
+}
+
 func (r *fakeRepository) Get(_ context.Context, id string) (jobs.Job, error) {
 	if r.getErr != nil {
 		return jobs.Job{}, r.getErr
@@ -157,6 +176,36 @@ func TestCreateJobAcceptsRunAt(t *testing.T) {
 	}
 	if job.RunAt.Format(time.RFC3339) != runAt {
 		t.Errorf("RunAt = %s, want %s", job.RunAt, runAt)
+	}
+}
+
+func TestCreateJobAcceptsDependencies(t *testing.T) {
+	dependencyID := "d1ec071d-67f7-4aad-ae55-054c1ef3785e"
+	request := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(`{"kind":"echo","depends_on":["`+dependencyID+`"]}`))
+	response := httptest.NewRecorder()
+
+	newTestHandler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, http.StatusCreated, response.Body.String())
+	}
+	var job jobs.Job
+	if err := json.NewDecoder(response.Body).Decode(&job); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(job.DependsOn) != 1 || job.DependsOn[0] != dependencyID {
+		t.Errorf("DependsOn = %v, want [%s]", job.DependsOn, dependencyID)
+	}
+}
+
+func TestCreateJobRejectsInvalidDependencies(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/jobs", strings.NewReader(`{"kind":"echo","depends_on":["not-a-uuid"]}`))
+	response := httptest.NewRecorder()
+
+	newTestHandler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d; body = %s", response.Code, http.StatusBadRequest, response.Body.String())
 	}
 }
 

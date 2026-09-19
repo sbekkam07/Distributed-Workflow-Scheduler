@@ -31,6 +31,10 @@ var (
 	ErrIdempotencyConflict = errors.New("idempotency key was already used for a different job")
 	// ErrInvalidPriority indicates an unsupported job priority.
 	ErrInvalidPriority = errors.New("priority must be HIGH, NORMAL, or LOW")
+	// ErrInvalidDependencies indicates malformed or duplicate prerequisite IDs.
+	ErrInvalidDependencies = errors.New("dependencies must contain unique job UUIDs")
+	// ErrDependencyNotFound indicates a submitted prerequisite does not exist.
+	ErrDependencyNotFound = errors.New("job dependency not found")
 )
 
 // DefaultMaxAttempts is the total number of executions allowed for a job,
@@ -59,6 +63,7 @@ const (
 	StatusSucceeded Status = "SUCCEEDED"
 	StatusFailed    Status = "FAILED"
 	StatusDead      Status = "DEAD"
+	StatusBlocked   Status = "BLOCKED"
 )
 
 // Job is one independently executable unit of work.
@@ -83,6 +88,24 @@ type Job struct {
 	IdempotencyKey  *string         `json:"idempotency_key,omitempty"`
 	Priority        Priority        `json:"priority"`
 	RunAt           time.Time       `json:"run_at"`
+	DependsOn       []string        `json:"depends_on,omitempty"`
+}
+
+// ValidateDependencies accepts only unique, existing-job-shaped UUIDs. Since
+// edges are immutable and prerequisites must already exist, this also prevents
+// dependency cycles at submission time.
+func ValidateDependencies(ids []string) error {
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if ValidateID(id) != nil {
+			return ErrInvalidDependencies
+		}
+		if _, ok := seen[id]; ok {
+			return ErrInvalidDependencies
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
 }
 
 // New creates a queued job that is ready for a worker to claim.

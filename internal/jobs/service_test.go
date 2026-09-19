@@ -33,6 +33,25 @@ func (r *memoryRepository) CreateOrGet(ctx context.Context, job Job) (Job, bool,
 	return created, true, err
 }
 
+func (r *memoryRepository) CreateWithDependencies(ctx context.Context, job Job, dependencies []string) (Job, error) {
+	created, err := r.Create(ctx, job)
+	created.DependsOn = append([]string(nil), dependencies...)
+	r.job = created
+	return created, err
+}
+
+func (r *memoryRepository) CreateOrGetWithDependencies(ctx context.Context, job Job, dependencies []string) (Job, bool, error) {
+	persisted, created, err := r.CreateOrGet(ctx, job)
+	if err != nil {
+		return Job{}, false, err
+	}
+	if created {
+		persisted.DependsOn = append([]string(nil), dependencies...)
+		r.job = persisted
+	}
+	return persisted, created, nil
+}
+
 func (r *memoryRepository) Get(_ context.Context, _ string) (Job, error) {
 	if r.getErr != nil {
 		return Job{}, r.getErr
@@ -43,11 +62,11 @@ func (r *memoryRepository) Get(_ context.Context, _ string) (Job, error) {
 func TestServiceSubmitIdempotently(t *testing.T) {
 	repository := &memoryRepository{}
 	service := NewService(repository, time.Now)
-	first, err := service.SubmitIdempotently(context.Background(), "echo", json.RawMessage(`{"message":"once"}`), 3, PriorityNormal, time.Now(), "request-key")
+	first, err := service.SubmitIdempotently(context.Background(), "echo", json.RawMessage(`{"message":"once"}`), 3, PriorityNormal, time.Now(), nil, "request-key")
 	if err != nil || !first.Created {
 		t.Fatalf("first SubmitIdempotently() = %+v, %v", first, err)
 	}
-	second, err := service.SubmitIdempotently(context.Background(), "echo", json.RawMessage(`{"message":"once"}`), 3, PriorityNormal, time.Now(), "request-key")
+	second, err := service.SubmitIdempotently(context.Background(), "echo", json.RawMessage(`{"message":"once"}`), 3, PriorityNormal, time.Now(), nil, "request-key")
 	if err != nil || second.Created || second.Job.ID != first.Job.ID {
 		t.Fatalf("second SubmitIdempotently() = %+v, %v", second, err)
 	}

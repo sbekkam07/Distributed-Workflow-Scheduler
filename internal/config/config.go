@@ -16,6 +16,7 @@ const (
 	defaultWorkerHeartbeatInterval       = 3 * time.Second
 	defaultWorkerRetryBackoffBase        = time.Second
 	defaultWorkerRetryBackoffMax         = time.Minute
+	defaultSchedulerPollInterval         = 500 * time.Millisecond
 )
 
 // Config is the configuration shared by the API and worker processes.
@@ -29,6 +30,7 @@ type Config struct {
 	WorkerRetryBackoffBase  time.Duration
 	WorkerRetryBackoffMax   time.Duration
 	WorkerID                string
+	SchedulerPollInterval   time.Duration
 }
 
 // Load reads configuration from environment variables.
@@ -70,6 +72,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	schedulerPollInterval, err := schedulerPollInterval(os.Getenv("SCHEDULER_POLL_INTERVAL"))
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		DatabaseURL:             databaseURL,
@@ -81,6 +87,7 @@ func Load() (Config, error) {
 		WorkerRetryBackoffBase:  workerRetryBackoffBase,
 		WorkerRetryBackoffMax:   workerRetryBackoffMax,
 		WorkerID:                strings.TrimSpace(os.Getenv("WORKER_ID")),
+		SchedulerPollInterval:   schedulerPollInterval,
 	}, nil
 }
 
@@ -127,15 +134,11 @@ func positiveDuration(name, value string, defaultValue time.Duration) (time.Dura
 }
 
 func workerPollInterval(value string) (time.Duration, error) {
-	if strings.TrimSpace(value) == "" {
-		return defaultWorkerPollInterval, nil
-	}
+	return positiveDuration("WORKER_POLL_INTERVAL", value, defaultWorkerPollInterval)
+}
 
-	parsed, err := time.ParseDuration(value)
-	if err != nil || parsed <= 0 {
-		return 0, fmt.Errorf("WORKER_POLL_INTERVAL must be a positive duration")
-	}
-	return parsed, nil
+func schedulerPollInterval(value string) (time.Duration, error) {
+	return positiveDuration("SCHEDULER_POLL_INTERVAL", value, defaultSchedulerPollInterval)
 }
 
 func databaseMaxConns(value string) (int32, error) {
