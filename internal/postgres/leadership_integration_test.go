@@ -36,6 +36,9 @@ func TestSchedulerLeadershipIsExclusiveAndFailsOver(t *testing.T) {
 	if blocked, err := first.ResolveBlocked(ctx); err != nil || blocked != 0 {
 		t.Fatalf("leader ResolveBlocked() = %d, %v; want 0, nil", blocked, err)
 	}
+	if depth, err := first.QueueDepth(ctx); err != nil || depth != 0 {
+		t.Fatalf("leader QueueDepth() = %d, %v; want 0, nil", depth, err)
+	}
 
 	if second, acquired, err := secondElector.TryAcquire(ctx); err != nil || acquired || second != nil {
 		t.Fatalf("second TryAcquire() while first leads = %v, %t, %v; want nil, false, nil", err, acquired, second)

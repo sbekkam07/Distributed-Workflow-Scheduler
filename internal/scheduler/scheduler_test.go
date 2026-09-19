@@ -14,6 +14,7 @@ type fakeElector struct {
 	acquisitions int
 	resolutions  int
 	resolveErr   error
+	queueDepth   int64
 }
 
 func (e *fakeElector) TryAcquire(context.Context) (Leadership, bool, error) {
@@ -32,6 +33,18 @@ type fakeLeadership struct {
 func (l *fakeLeadership) ResolveBlocked(context.Context) (int64, error) {
 	l.elector.resolutions++
 	return 0, l.elector.resolveErr
+}
+
+func (l *fakeLeadership) QueueDepth(context.Context) (int64, error) {
+	return l.elector.queueDepth, nil
+}
+
+type fakeObserver struct {
+	depth int64
+}
+
+func (o *fakeObserver) QueueDepth(depth int64) {
+	o.depth = depth
 }
 
 func (l *fakeLeadership) Release(context.Context) error {
@@ -83,6 +96,22 @@ func TestRunOnceReleasesLeadershipAfterReconciliationError(t *testing.T) {
 	}
 	if elector.active {
 		t.Error("leadership remained active after reconciliation error")
+	}
+}
+
+func TestRunOnceReportsQueueDepthFromLeader(t *testing.T) {
+	elector := &fakeElector{queueDepth: 7}
+	observer := &fakeObserver{}
+	s, err := New(elector, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)), observer)
+	if err != nil {
+		t.Fatalf("New scheduler: %v", err)
+	}
+	defer s.Close(context.Background())
+	if err := s.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if observer.depth != 7 {
+		t.Errorf("queue depth = %d, want 7", observer.depth)
 	}
 }
 

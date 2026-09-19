@@ -11,6 +11,7 @@ import (
 // coordination lock until Release or session loss.
 type Leadership interface {
 	ResolveBlocked(context.Context) (int64, error)
+	QueueDepth(context.Context) (int64, error)
 	Release(context.Context) error
 }
 
@@ -27,6 +28,11 @@ func (f ElectorFunc) TryAcquire(ctx context.Context) (Leadership, bool, error) {
 	return f(ctx)
 }
 
+// Observer receives scheduler measurements from the active leader only.
+type Observer interface {
+	QueueDepth(int64)
+}
+
 // Scheduler coordinates operations that must be performed by one active
 // process. Job claiming remains decentralized among workers.
 type Scheduler struct {
@@ -34,11 +40,12 @@ type Scheduler struct {
 	pollInterval time.Duration
 	logger       *slog.Logger
 	leadership   Leadership
+	observer     Observer
 }
 
 // New constructs a scheduler. It does not acquire leadership until RunOnce or
 // Run, allowing multiple schedulers to start without blocking one another.
-func New(elector Elector, pollInterval time.Duration, logger *slog.Logger) (*Scheduler, error) {
+func New(elector Elector, pollInterval time.Duration, logger *slog.Logger, observers ...Observer) (*Scheduler, error) {
 	if elector == nil {
 		return nil, fmt.Errorf("scheduler elector is required")
 	}
@@ -48,7 +55,14 @@ func New(elector Elector, pollInterval time.Duration, logger *slog.Logger) (*Sch
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Scheduler{elector: elector, pollInterval: pollInterval, logger: logger}, nil
+	if len(observers) > 1 {
+		return nil, fmt.Errorf("at most one scheduler observer is supported")
+	}
+	var observer Observer
+	if len(observers) == 1 {
+		observer = observers[0]
+	}
+	return &Scheduler{elector: elector, pollInterval: pollInterval, logger: logger, observer: observer}, nil
 }
 
 // Run keeps trying for leadership and performs the leader-only reconciliation
@@ -100,6 +114,17 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	}
 	if blocked > 0 {
 		s.logger.Warn("blocked jobs with failed prerequisites", "count", blocked)
+	}
+	depth, err := s.leadership.QueueDepth(ctx)
+	if err != nil {
+		releaseErr := s.release(context.Background())
+		if releaseErr != nil {
+			return fmt.Errorf("read queue depth: %w; release leadership: %v", err, releaseErr)
+		}
+		return fmt.Errorf("read queue depth: %w", err)
+	}
+	if s.observer != nil {
+		s.observer.QueueDepth(depth)
 	}
 	return nil
 }

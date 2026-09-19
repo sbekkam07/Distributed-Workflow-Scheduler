@@ -32,6 +32,9 @@ func TestLoad(t *testing.T) {
 	if cfg.SchedulerPollInterval != defaultSchedulerPollInterval {
 		t.Errorf("SchedulerPollInterval = %s, want %s", cfg.SchedulerPollInterval, defaultSchedulerPollInterval)
 	}
+	if cfg.WorkerMetricsAddress != defaultWorkerMetricsAddress || cfg.SchedulerMetricsAddress != defaultSchedulerMetricsAddress {
+		t.Errorf("metrics addresses = %q/%q, want %q/%q", cfg.WorkerMetricsAddress, cfg.SchedulerMetricsAddress, defaultWorkerMetricsAddress, defaultSchedulerMetricsAddress)
+	}
 }
 
 func TestWorkerRetryBackoffConfiguration(t *testing.T) {
@@ -107,6 +110,17 @@ func TestLoadRequiresDatabaseURL(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() error = nil, want error")
+	}
+}
+
+func TestMetricsAddress(t *testing.T) {
+	t.Setenv("WORKER_METRICS_ADDR", ":9191")
+	if got := address("WORKER_METRICS_ADDR", defaultWorkerMetricsAddress); got != ":9191" {
+		t.Errorf("address() = %q, want %q", got, ":9191")
+	}
+	t.Setenv("WORKER_METRICS_ADDR", "")
+	if got := address("WORKER_METRICS_ADDR", defaultWorkerMetricsAddress); got != defaultWorkerMetricsAddress {
+		t.Errorf("address() default = %q, want %q", got, defaultWorkerMetricsAddress)
 	}
 }
 

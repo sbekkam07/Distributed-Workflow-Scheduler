@@ -3,12 +3,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/config"
+	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/observability"
 	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/postgres"
 	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/worker"
 )
@@ -37,6 +41,20 @@ func main() {
 		return
 	}
 	defer pool.Close()
+	metrics := observability.New()
+	metricsServer := observability.NewServer(cfg.WorkerMetricsAddress, metrics.Handler())
+	go func() {
+		if err := metricsServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("worker metrics server failed", "error", err)
+		}
+	}()
+	defer func() {
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := metricsServer.Shutdown(shutdownContext); err != nil {
+			slog.Error("worker metrics shutdown", "error", err)
+		}
+	}()
 
 	w, err := worker.New(
 		postgres.NewJobRepository(pool),
@@ -48,6 +66,7 @@ func main() {
 		cfg.WorkerRetryBackoffBase,
 		cfg.WorkerRetryBackoffMax,
 		slog.Default(),
+		metrics,
 	)
 	if err != nil {
 		slog.Error("configure worker", "error", err)
@@ -62,6 +81,7 @@ func main() {
 		"heartbeat_interval", cfg.WorkerHeartbeatInterval,
 		"retry_backoff_base", cfg.WorkerRetryBackoffBase,
 		"retry_backoff_max", cfg.WorkerRetryBackoffMax,
+		"metrics_addr", cfg.WorkerMetricsAddress,
 	)
 	if err := w.Run(ctx); err != nil {
 		slog.Error("worker stopped with error", "error", err)

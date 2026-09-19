@@ -17,6 +17,8 @@ const (
 	defaultWorkerRetryBackoffBase        = time.Second
 	defaultWorkerRetryBackoffMax         = time.Minute
 	defaultSchedulerPollInterval         = 500 * time.Millisecond
+	defaultWorkerMetricsAddress          = ":9091"
+	defaultSchedulerMetricsAddress       = ":9092"
 )
 
 // Config is the configuration shared by the API and worker processes.
@@ -31,6 +33,8 @@ type Config struct {
 	WorkerRetryBackoffMax   time.Duration
 	WorkerID                string
 	SchedulerPollInterval   time.Duration
+	WorkerMetricsAddress    string
+	SchedulerMetricsAddress string
 }
 
 // Load reads configuration from environment variables.
@@ -88,6 +92,8 @@ func Load() (Config, error) {
 		WorkerRetryBackoffMax:   workerRetryBackoffMax,
 		WorkerID:                strings.TrimSpace(os.Getenv("WORKER_ID")),
 		SchedulerPollInterval:   schedulerPollInterval,
+		WorkerMetricsAddress:    address("WORKER_METRICS_ADDR", defaultWorkerMetricsAddress),
+		SchedulerMetricsAddress: address("SCHEDULER_METRICS_ADDR", defaultSchedulerMetricsAddress),
 	}, nil
 }
 
@@ -139,6 +145,14 @@ func workerPollInterval(value string) (time.Duration, error) {
 
 func schedulerPollInterval(value string) (time.Duration, error) {
 	return positiveDuration("SCHEDULER_POLL_INTERVAL", value, defaultSchedulerPollInterval)
+}
+
+func address(environmentValue, defaultValue string) string {
+	value := strings.TrimSpace(os.Getenv(environmentValue))
+	if value == "" {
+		return defaultValue
+	}
+	return value
 }
 
 func databaseMaxConns(value string) (int32, error) {

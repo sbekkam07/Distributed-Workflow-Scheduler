@@ -10,21 +10,29 @@ import (
 	"time"
 
 	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/jobs"
+	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/observability"
 )
 
 const maxRequestBodyBytes = 1 << 20
 
-// NewHandler returns the Phase 1 job HTTP API.
-func NewHandler(service *jobs.Service) http.Handler {
+// NewHandler returns the job HTTP API and, when provided, a Prometheus endpoint.
+func NewHandler(service *jobs.Service, metricSets ...*observability.Metrics) http.Handler {
 	handler := &handler{service: service}
+	if len(metricSets) > 0 {
+		handler.metrics = metricSets[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /jobs", handler.createJob)
 	mux.HandleFunc("GET /jobs/{id}", handler.getJob)
+	if handler.metrics != nil {
+		mux.Handle("GET /metrics", handler.metrics.Handler())
+	}
 	return mux
 }
 
 type handler struct {
 	service *jobs.Service
+	metrics *observability.Metrics
 }
 
 type createJobRequest struct {
@@ -74,6 +82,8 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusCreated
 		if !submission.Created {
 			status = http.StatusOK
+		} else if h.metrics != nil {
+			h.metrics.JobSubmitted()
 		}
 		writeJSON(w, status, submission.Job)
 		return
@@ -83,6 +93,9 @@ func (h *handler) createJob(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeCreateJobError(w, err)
 		return
+	}
+	if h.metrics != nil {
+		h.metrics.JobSubmitted()
 	}
 	writeJSON(w, http.StatusCreated, job)
 }

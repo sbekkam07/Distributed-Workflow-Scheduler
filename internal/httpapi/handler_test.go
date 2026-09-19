@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/jobs"
+	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/observability"
 )
 
 const testJobID = "d1ec071d-67f7-4aad-ae55-054c1ef3785e"
@@ -100,6 +101,19 @@ func TestCreateJob(t *testing.T) {
 	}
 	if job.ID != testJobID || job.Status != jobs.StatusQueued {
 		t.Errorf("job = %+v, want persisted queued job", job)
+	}
+}
+
+func TestMetricsEndpointIsExposedWhenConfigured(t *testing.T) {
+	repository := &fakeRepository{jobs: make(map[string]jobs.Job), nextID: testJobID}
+	service := jobs.NewService(repository, time.Now)
+	handler := NewHandler(service, observability.New())
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "scheduler_jobs_submitted_total") {
+		t.Errorf("metrics response = %d %q, want Prometheus metrics", response.Code, response.Body.String())
 	}
 }
 

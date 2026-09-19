@@ -28,7 +28,7 @@ observability components. Do not build this target architecture all at once.
 
 ## Current verified status
 
-Phases 1–9 are complete. The repository has Go process entry points, a
+Phases 1–11 are complete. The repository has Go process entry points, a
 `Job` domain state machine, PostgreSQL connection configuration, an embedded
 migration command, an initial `jobs` schema, a PostgreSQL job repository, and
 `POST /jobs` and `GET /jobs/{id}` endpoints. Multiple workers safely claim jobs
@@ -58,8 +58,14 @@ become terminal `BLOCKED` without executing. A dedicated scheduler uses a
 PostgreSQL session advisory lock to make this reconciliation leader-only; lock
 loss is safe because reconciliation is an idempotent conditional update.
 Recurring workflows and a scheduler coordinator for other operations are not
-yet implemented. Inspect the code and tests; the roadmap is not proof that a
-feature exists.
+yet implemented. Prometheus metrics expose submitted jobs, durable execution
+outcomes, failure/retry rate, queue and execution latency, leader-observed
+queue depth, and active worker processes. The bundled Grafana dashboard is a
+starter query set; Docker-based Prometheus/Grafana provisioning is deferred to
+Phase 12. A reproducible `cmd/loadtest` reports throughput and latency from
+durable timestamps for explicitly labeled runs, and the Phase 11 document
+defines manual worker, database, scheduler, and dependency fault scenarios.
+Inspect the code and tests; the roadmap is not proof that a feature exists.
 
 ## Phase boundaries
 

@@ -63,6 +63,14 @@ func (l *SchedulerLeadership) ResolveBlocked(ctx context.Context) (int64, error)
 	return resolveBlocked(ctx, l.connection)
 }
 
+// QueueDepth reads the queue-depth metric through the leader's session.
+func (l *SchedulerLeadership) QueueDepth(ctx context.Context) (int64, error) {
+	if l == nil || l.connection == nil {
+		return 0, fmt.Errorf("scheduler leadership is not active")
+	}
+	return queueDepth(ctx, l.connection)
+}
+
 // Release relinquishes leadership. If unlock cannot be confirmed, the
 // connection is closed rather than returned to the pool, so PostgreSQL releases
 // any session lock before another pool user can receive that connection.

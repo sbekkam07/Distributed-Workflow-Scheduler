@@ -87,6 +87,24 @@ type fakeExecutor struct {
 	executed jobs.Job
 }
 
+type fakeObserver struct {
+	claimed      int
+	finished     []string
+	activeValues []bool
+}
+
+func (o *fakeObserver) JobClaimed(time.Time, time.Time) {
+	o.claimed++
+}
+
+func (o *fakeObserver) JobFinished(outcome string, _ time.Duration) {
+	o.finished = append(o.finished, outcome)
+}
+
+func (o *fakeObserver) ActiveWorker(active bool) {
+	o.activeValues = append(o.activeValues, active)
+}
+
 func (e *fakeExecutor) Execute(_ context.Context, job jobs.Job) error {
 	e.executed = job
 	return e.err
@@ -151,6 +169,21 @@ func TestRunOnceMarksSuccessfulExecution(t *testing.T) {
 	}
 	if store.failedJobID != "" {
 		t.Errorf("failed job ID = %q, want empty", store.failedJobID)
+	}
+}
+
+func TestRunOnceReportsDurableOutcomeToObserver(t *testing.T) {
+	store := &fakeStore{job: jobs.Job{ID: "job-observed", Kind: "echo", CreatedAt: time.Now().Add(-time.Second)}, claimed: true}
+	observer := &fakeObserver{}
+	worker, err := New(store, &fakeExecutor{}, "worker-test", time.Second, time.Second, 100*time.Millisecond, time.Second, time.Minute, testLogger(), observer)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if _, err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if observer.claimed != 1 || len(observer.finished) != 1 || observer.finished[0] != "succeeded" {
+		t.Errorf("observer = %+v, want one claim and succeeded outcome", observer)
 	}
 }
 
@@ -225,11 +258,18 @@ func TestLeaseLossCancelsExecution(t *testing.T) {
 }
 
 func TestRunReturnsOnCancellation(t *testing.T) {
-	worker := newTestWorker(t, &fakeStore{}, &fakeExecutor{}, 100*time.Millisecond)
+	observer := &fakeObserver{}
+	worker, err := New(&fakeStore{}, &fakeExecutor{}, "worker-test", time.Second, time.Second, 100*time.Millisecond, time.Second, time.Minute, testLogger(), observer)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	if err := worker.Run(ctx); err != nil {
 		t.Fatalf("Run() error = %v", err)
+	}
+	if len(observer.activeValues) != 2 || !observer.activeValues[0] || observer.activeValues[1] {
+		t.Errorf("worker active values = %v, want [true false]", observer.activeValues)
 	}
 }

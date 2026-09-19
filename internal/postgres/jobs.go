@@ -262,6 +262,12 @@ func (r *JobRepository) ResolveBlocked(ctx context.Context) (int64, error) {
 	return resolveBlocked(ctx, r.pool)
 }
 
+// QueueDepth returns the current count of durable queued jobs, including jobs
+// intentionally scheduled for later or waiting on prerequisites.
+func (r *JobRepository) QueueDepth(ctx context.Context) (int64, error) {
+	return queueDepth(ctx, r.pool)
+}
+
 type commandExecer interface {
 	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 }
@@ -289,6 +295,14 @@ func resolveBlocked(ctx context.Context, executor commandExecer) (int64, error) 
 		return 0, fmt.Errorf("resolve blocked jobs: %w", err)
 	}
 	return result.RowsAffected(), nil
+}
+
+func queueDepth(ctx context.Context, queryer rowQueryer) (int64, error) {
+	var depth int64
+	if err := queryer.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE status = 'QUEUED'`).Scan(&depth); err != nil {
+		return 0, fmt.Errorf("get queue depth: %w", err)
+	}
+	return depth, nil
 }
 
 // RecordFailure records a failed execution. Retryable failures remain queued

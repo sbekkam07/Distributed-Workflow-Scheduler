@@ -16,6 +16,7 @@ import (
 	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/config"
 	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/httpapi"
 	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/jobs"
+	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/observability"
 	"github.com/sohanbekkam/distributed-workflow-scheduler/internal/postgres"
 )
 
@@ -36,7 +37,8 @@ func main() {
 
 	repository := postgres.NewJobRepository(pool)
 	service := jobs.NewService(repository, time.Now)
-	server := httpapi.DefaultServer(cfg.HTTPAddress, httpapi.NewHandler(service))
+	metrics := observability.New()
+	server := httpapi.DefaultServer(cfg.HTTPAddress, httpapi.NewHandler(service, metrics))
 
 	serverErrors := make(chan error, 1)
 	go func() {

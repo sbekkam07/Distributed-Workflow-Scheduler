@@ -26,6 +26,14 @@ type Executor interface {
 	Execute(context.Context, jobs.Job) error
 }
 
+// Observer receives process-local operational measurements. Implementations
+// must not affect job execution when metrics collection is unavailable.
+type Observer interface {
+	JobClaimed(createdAt, claimedAt time.Time)
+	JobFinished(outcome string, duration time.Duration)
+	ActiveWorker(active bool)
+}
+
 // Worker polls for and executes jobs one at a time.
 type Worker struct {
 	store             Store
@@ -37,6 +45,7 @@ type Worker struct {
 	retryBackoffMax   time.Duration
 	workerID          string
 	logger            *slog.Logger
+	observer          Observer
 }
 
 // New constructs a worker with a renewable lease. workerID must be unique among
@@ -47,6 +56,7 @@ func New(
 	workerID string,
 	pollInterval, leaseDuration, heartbeatInterval, retryBackoffBase, retryBackoffMax time.Duration,
 	logger *slog.Logger,
+	observers ...Observer,
 ) (*Worker, error) {
 	if store == nil {
 		return nil, fmt.Errorf("worker store is required")
@@ -75,6 +85,13 @@ func New(
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if len(observers) > 1 {
+		return nil, fmt.Errorf("at most one worker observer is supported")
+	}
+	var observer Observer
+	if len(observers) == 1 {
+		observer = observers[0]
+	}
 
 	return &Worker{
 		store:             store,
@@ -86,12 +103,17 @@ func New(
 		retryBackoffMax:   retryBackoffMax,
 		workerID:          workerID,
 		logger:            logger,
+		observer:          observer,
 	}, nil
 }
 
 // Run polls until ctx is canceled. Database errors are logged and retried after
 // the polling interval so a temporary outage does not create a busy loop.
 func (w *Worker) Run(ctx context.Context) error {
+	if w.observer != nil {
+		w.observer.ActiveWorker(true)
+		defer w.observer.ActiveWorker(false)
+	}
 	for {
 		claimed, err := w.RunOnce(ctx)
 		if err != nil {
@@ -134,7 +156,12 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 	}
 
 	w.logger.Info("claimed job", "job_id", job.ID, "kind", job.Kind, "effect_key", job.EffectKey(), "lease_owner", w.workerID)
+	claimedAt := time.Now()
+	if w.observer != nil {
+		w.observer.JobClaimed(job.CreatedAt, claimedAt)
+	}
 	executionErr := w.executeWithHeartbeats(ctx, job)
+	executionDuration := time.Since(claimedAt)
 	finalizationContext, cancel := finalizationContext(ctx)
 	defer cancel()
 
@@ -154,10 +181,13 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		}
 		switch outcome {
 		case jobs.StatusQueued:
+			w.observeFinished("retried", executionDuration)
 			w.logger.Warn("job retry scheduled", "job_id", job.ID, "attempt", job.AttemptCount, "backoff", retryDelay, "error", executionErr)
 		case jobs.StatusDead:
+			w.observeFinished("dead", executionDuration)
 			w.logger.Error("job dead-lettered", "job_id", job.ID, "attempt", job.AttemptCount, "error", executionErr)
 		default:
+			w.observeFinished("failed", executionDuration)
 			w.logger.Warn("job failed", "job_id", job.ID, "error", executionErr)
 		}
 		return true, nil
@@ -170,8 +200,15 @@ func (w *Worker) RunOnce(ctx context.Context) (bool, error) {
 		}
 		return true, fmt.Errorf("persist job success: %w", err)
 	}
+	w.observeFinished("succeeded", executionDuration)
 	w.logger.Info("job succeeded", "job_id", job.ID)
 	return true, nil
+}
+
+func (w *Worker) observeFinished(outcome string, duration time.Duration) {
+	if w.observer != nil {
+		w.observer.JobFinished(outcome, duration)
+	}
 }
 
 func (w *Worker) executeWithHeartbeats(ctx context.Context, job jobs.Job) error {

@@ -4,7 +4,7 @@ A Go workflow scheduler built incrementally to explore reliable job execution.
 
 ## Current phase
 
-Phases 1–9 complete: workers poll PostgreSQL, transactionally claim queued
+Phases 1–10 complete: workers poll PostgreSQL, transactionally claim queued
 jobs, run the initial `echo` executor, and record final state. PostgreSQL row
 locks prevent simultaneous claims, while leases and heartbeats let another
 worker recover work left `RUNNING` after a worker disappears. Retryable failures
@@ -14,6 +14,8 @@ Eligible jobs use strict `HIGH`, `NORMAL`, then `LOW` claim priority.
 Scheduled jobs remain in the durable queue until their `run_at` time arrives.
 Jobs can form immutable dependency DAGs with explicit failure propagation.
 A separate scheduler uses PostgreSQL-backed leadership for that reconciliation.
+Prometheus metrics and a starter Grafana dashboard expose queue health and job
+outcomes.
 
 ## Layout
 
@@ -214,6 +216,43 @@ non-idempotent external effect. The only leader operation here is a conditional
 database update, which remains safe to retry if a network failure makes a
 leader's result uncertain.
 
+## Observability
+
+Metrics answer operational questions rather than reporting arbitrary values:
+job arrival rate, durable outcome and failure/retry rate, p95 queue/execution
+latency, queued-job depth, and active worker count. The API exposes its metrics
+at its existing address, while worker and scheduler processes use separate
+default ports:
+
+```text
+API:       http://localhost:8080/metrics
+Worker:    http://localhost:9091/metrics
+Scheduler: http://localhost:9092/metrics
+```
+
+Change worker and scheduler endpoints with `WORKER_METRICS_ADDR` and
+`SCHEDULER_METRICS_ADDR`. Give every concurrent worker a distinct metrics port
+and configure Prometheus to scrape each target; `scheduler_active_workers` is
+summed across those targets. The starter dashboard is
+`grafana/dashboards/scheduler-overview.json`; import it after adding a
+Prometheus data source. Docker Compose provisioning is intentionally deferred
+to Phase 12.
+
+## Load and fault testing
+
+`cmd/loadtest` produces a JSON report from durable job timestamps; it is a
+measurement tool, not a hard-coded performance claim. With API, worker, and
+scheduler processes running, use:
+
+```bash
+go run ./cmd/loadtest -jobs 1000 -concurrency 32 -timeout 5m > results.json
+```
+
+Repeat it for 1, 2, 4, and 8 workers and preserve each result with the machine
+and PostgreSQL resource measurements from that run. The exact scaling procedure
+and worker/database/scheduler failure scenarios are in
+[`docs/phase11-load-and-fault-testing.md`](docs/phase11-load-and-fault-testing.md).
+
 ## Concurrent workers
 
 Phase 2 supports multiple worker processes. Each worker claims jobs in a short
@@ -254,5 +293,5 @@ go run ./cmd/scheduler
 
 ## Next increment
 
-Phase 10: add useful Prometheus metrics and Grafana dashboards tied to
-operational questions.
+Phase 12: add Docker Compose for local services, then container and Kubernetes
+deployment artifacts only after that environment is working.
